@@ -1,0 +1,9 @@
+services:
+  tidepool-dashboard:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./analysis:/workspace/analysis
+      - ./data:/workspace/data
+      - ./log.csv:/workspace/log.csv:ro

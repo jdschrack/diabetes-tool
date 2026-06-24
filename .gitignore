@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+
+app/dist/
+app/node_modules/
+app/*.tsbuildinfo
+app/vite.config.js
+app/vite.config.d.ts
+
+data/imports/

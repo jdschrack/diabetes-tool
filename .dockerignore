@@ -1,0 +1,15 @@
+.git
+.agents
+.codex
+
+app/node_modules
+app/dist
+app/*.tsbuildinfo
+app/vite.config.js
+app/vite.config.d.ts
+
+analysis
+data
+dashboard
+__pycache__
+*.pyc

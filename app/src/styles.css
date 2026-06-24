@@ -1,0 +1,287 @@
+:root {
+  --bg: #f6f7f9;
+  --panel: #fff;
+  --ink: #22272f;
+  --muted: #667085;
+  --line: #d9dee7;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.app-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 24px 32px 18px;
+  border-bottom: 1px solid var(--line);
+  background: #fff;
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 26px;
+}
+
+h2 {
+  margin-bottom: 8px;
+  font-size: 16px;
+}
+
+p {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+main {
+  padding: 20px 32px 36px;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+select,
+.import-button {
+  height: 36px;
+  border: 1px solid #aeb8cb;
+  border-radius: 6px;
+  background: #fff;
+  color: var(--ink);
+  padding: 0 12px;
+  font: inherit;
+  font-size: 13px;
+}
+
+.import-button {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.import-button input {
+  display: none;
+}
+
+.status {
+  margin: 16px 32px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--muted);
+}
+
+.tabs {
+  display: inline-flex;
+  gap: 4px;
+  margin-bottom: 18px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.tabs button {
+  min-width: 112px;
+  height: 34px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.tabs button.active {
+  background: #1f2937;
+  color: #fff;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.panel {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.panel.full {
+  grid-column: 1 / -1;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(130px, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.metric-grid div {
+  padding: 12px;
+  border: 1px solid #eef1f5;
+  border-radius: 6px;
+  background: #fafbfc;
+}
+
+.metric-grid span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.metric-grid strong {
+  display: block;
+  margin-top: 6px;
+  font-size: 24px;
+}
+
+table {
+  width: 100%;
+  margin-top: 14px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+.table-scroll table {
+  min-width: 1120px;
+}
+
+.window-breakdown {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.window-breakdown span {
+  padding: 6px 9px;
+  border: 1px solid #eef1f5;
+  border-radius: 6px;
+  background: #fafbfc;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.window-breakdown strong {
+  color: var(--ink);
+}
+
+th,
+td {
+  padding: 9px 10px;
+  border-bottom: 1px solid #eef1f5;
+  text-align: right;
+}
+
+th:first-child,
+td:first-child {
+  text-align: left;
+}
+
+th {
+  color: var(--muted);
+  font-weight: 650;
+}
+
+.trend {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.trend.increase {
+  background: #fdebea;
+  color: #d64f4f;
+}
+
+.trend.decrease {
+  background: #eef7f2;
+  color: #278f68;
+}
+
+.trend.flat {
+  background: #eef1f5;
+  color: var(--muted);
+}
+
+.metric-definitions {
+  margin-top: 24px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.definition-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 10px;
+}
+
+.definition-grid div {
+  min-width: 0;
+  padding-top: 10px;
+  border-top: 1px solid #eef1f5;
+}
+
+.definition-grid h3 {
+  margin: 0 0 5px;
+  font-size: 13px;
+}
+
+.definition-grid p {
+  font-size: 13px;
+}
+
+.loading {
+  padding: 32px;
+}
+
+@media (max-width: 900px) {
+  .app-header,
+  .header-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .grid,
+  .metric-grid,
+  .definition-grid {
+    grid-template-columns: 1fr;
+  }
+}

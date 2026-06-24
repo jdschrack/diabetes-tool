@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Twiist Tidepool Dashboard</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="app-header">
+      <div>
+        <h1>Twiist Tidepool Dashboard</h1>
+        <p id="subtitle"></p>
+      </div>
+      <div class="header-actions">
+        <div class="control-group" id="periodControl">
+          <label for="periodSelect">Summary Period</label>
+          <select id="periodSelect"></select>
+        </div>
+        <div class="control-group is-hidden" id="dayControl">
+          <label for="daySelect">Day</label>
+          <select id="daySelect"></select>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <nav class="tabs" aria-label="Dashboard views">
+        <button class="tab-button is-active" type="button" data-tab="summaryTab">Summary</button>
+        <button class="tab-button" type="button" data-tab="dayTab">Day Detail</button>
+      </nav>
+
+      <section class="tab-panel is-active" id="summaryTab">
+        <section class="summary-grid" aria-label="Period summary">
+          <article class="panel period-summary">
+            <div class="panel-title">
+              <h2 id="periodTitle">Period Summary</h2>
+              <span id="periodRange"></span>
+            </div>
+            <p class="panel-help">The summary period selector controls this tab. All charts below are filtered to the selected lookback window ending on the latest available day.</p>
+            <div class="summary-stats">
+              <div><span>Days</span><strong id="periodDays">--</strong></div>
+              <div><span>Avg CGM</span><strong id="periodAvg">--</strong></div>
+              <div><span>Time In Range</span><strong id="periodTir">--</strong></div>
+              <div><span>Extra Basal</span><strong id="periodExtra">--</strong></div>
+              <div><span>Extra / Day</span><strong id="periodExtraDay">--</strong></div>
+              <div><span>Bolus/g</span><strong id="periodBolusCarb">--</strong></div>
+            </div>
+          </article>
+        </section>
+
+        <section class="layout">
+          <div class="panel panel-wide">
+            <div class="panel-title">
+              <h2>Basal Correction Load</h2>
+              <span>daily units above schedule</span>
+            </div>
+            <p class="panel-help">Each bar is the insulin delivered above the configured basal schedule for that day. This is the primary signal for automated basal acting like correction insulin.</p>
+            <div id="basalCorrectionTrend" class="chart chart-short"></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-title">
+              <h2>Period Basal Mix</h2>
+              <span>scheduled vs extra</span>
+            </div>
+            <p class="panel-help">Shows how much basal matched the profile versus how much was additional automated delivery during the selected summary period.</p>
+            <div id="periodBasalBars" class="stacked-bars"></div>
+          </div>
+
+          <div class="panel panel-wide">
+            <div class="panel-title">
+              <h2>Hourly Basal Rate Profile</h2>
+              <span>average delivered vs configured</span>
+            </div>
+            <p class="panel-help">Top: configured basal profile compared with the average delivered basal rate for the selected period; the light band shows the observed delivered range. Bottom: average delivered minus configured by hour, so positive bars identify recurring basal correction windows.</p>
+            <div id="hourlyDeviationProfile" class="chart chart-tall"></div>
+          </div>
+
+          <div class="panel panel-wide">
+            <div class="panel-title">
+              <h2>Daily Time In Range</h2>
+              <div class="legend" id="rangeLegend"></div>
+            </div>
+            <p class="panel-help">Each daily bar is split by CGM range. Use this next to basal correction load to see whether extra basal coincided with more highs or lows.</p>
+            <div id="rangeTrend" class="chart"></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-title">
+              <h2>Period Glucose Ranges</h2>
+              <span>combined readings</span>
+            </div>
+            <p class="panel-help">This aggregates all CGM readings in the selected period into the five Tidepool-style glucose buckets.</p>
+            <div id="periodRangeBars" class="range-bars"></div>
+          </div>
+
+          <div class="panel panel-wide">
+            <div class="panel-title">
+              <h2>Glucose Trend</h2>
+              <span>CGM daily average</span>
+            </div>
+            <p class="panel-help">Daily average CGM for the selected period, with the 70 and 180 mg/dL reference lines.</p>
+            <div id="glucoseTrend" class="chart chart-short"></div>
+          </div>
+
+          <div class="panel panel-wide">
+            <div class="panel-title">
+              <h2>Meal Window Analysis</h2>
+              <span>4 hours after clustered meals</span>
+            </div>
+            <p class="panel-help">Food entries close together are grouped into one meal. The table uses timezone-aligned pump records and shows post-meal glucose plus extra basal delivered in the following 4 hours.</p>
+            <div class="table-wrap">
+              <table id="mealAnalysisTable"></table>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section class="tab-panel" id="dayTab">
+        <section class="metric-grid" aria-label="Selected day metrics">
+          <article class="metric">
+            <span class="metric-label">Avg CGM</span>
+            <strong id="avgGlucose">--</strong>
+            <span class="metric-unit">mg/dL</span>
+          </article>
+          <article class="metric">
+            <span class="metric-label">Time In Range</span>
+            <strong id="timeInRange">--</strong>
+            <span class="metric-unit">70-180 mg/dL</span>
+          </article>
+          <article class="metric">
+            <span class="metric-label">Total Insulin</span>
+            <strong id="totalInsulin">--</strong>
+            <span class="metric-unit">units</span>
+          </article>
+          <article class="metric">
+            <span class="metric-label">Carbs</span>
+            <strong id="carbs">--</strong>
+            <span class="metric-unit">grams</span>
+          </article>
+          <article class="metric">
+            <span class="metric-label">Std Dev</span>
+            <strong id="stddev">--</strong>
+            <span class="metric-unit">mg/dL</span>
+          </article>
+          <article class="metric">
+            <span class="metric-label">CV</span>
+            <strong id="cv">--</strong>
+            <span class="metric-unit">%</span>
+          </article>
+          <article class="metric">
+            <span class="metric-label">Basal Correction Load</span>
+            <strong id="basalCorrection">--</strong>
+            <span class="metric-unit">U above schedule</span>
+          </article>
+        </section>
+
+        <section class="layout">
+        <div class="panel panel-wide">
+          <div class="panel-title">
+            <h2>Selected Day Glucose Trend</h2>
+            <span>intraday CGM</span>
+          </div>
+          <p class="panel-help">Shows the selected day's CGM readings over the local 24-hour day with 70 and 180 mg/dL reference lines.</p>
+          <div id="selectedDayGlucoseTrend" class="chart chart-short"></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">
+            <h2>Selected Day Ranges</h2>
+            <span>CGM buckets</span>
+          </div>
+          <p class="panel-help">Breaks the selected day into the same five glucose ranges used in the summary tab.</p>
+          <div id="selectedRangeBars" class="range-bars"></div>
+        </div>
+
+        <div class="panel panel-wide">
+          <div class="panel-title">
+            <h2>Hourly Basal Deviation</h2>
+            <span id="selectedDayLabel"></span>
+          </div>
+          <p class="panel-help">Each hour compares delivered basal to the scheduled basal profile. Blue means net above schedule; red means net below schedule. Hover cells for exact net and extra basal values.</p>
+          <div id="hourlyDeviation" class="hourly-grid"></div>
+        </div>
+
+        <div class="panel panel-wide">
+          <div class="panel-title">
+            <h2>Selected Day Basal Mix</h2>
+            <span>insulin and carbs</span>
+          </div>
+          <p class="panel-help">Compares basal, bolus, and carbs for the selected day. Basal and bolus come from your sheet when available, with Tidepool values as fallback.</p>
+          <div id="insulinBars" class="stacked-bars"></div>
+        </div>
+        </section>
+      </section>
+
+      <section class="reference-layout">
+        <div class="panel panel-wide">
+          <div class="panel-title">
+            <h2>Daily Log</h2>
+            <span>outside tab group</span>
+          </div>
+          <p class="panel-help">This is the manually maintained sheet summary, kept visible as a reference regardless of which dashboard tab is active.</p>
+          <div class="table-wrap">
+            <table id="dailyLogTable"></table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">
+            <h2>Baseline</h2>
+            <span>iLet vs Twiist</span>
+          </div>
+          <p class="panel-help">Your comparison between the iLet baseline period and the Twiist average from the sheet.</p>
+          <div class="table-wrap">
+            <table id="baselineTable"></table>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="dashboard-data.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
