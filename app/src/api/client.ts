@@ -1,4 +1,4 @@
-import type { DashboardData } from "./types";
+import type { DashboardData, ImportJob } from "./types";
 
 export async function fetchDashboard(): Promise<DashboardData> {
   const response = await fetch("/api/dashboard");
@@ -8,7 +8,7 @@ export async function fetchDashboard(): Promise<DashboardData> {
   return response.json();
 }
 
-export async function importTidepoolExport(file: File): Promise<DashboardData> {
+export async function startTidepoolImport(file: File): Promise<ImportJob> {
   const form = new FormData();
   form.append("file", file);
   const response = await fetch("/api/import", {
@@ -20,5 +20,15 @@ export async function importTidepoolExport(file: File): Promise<DashboardData> {
     throw new Error(`Import failed: ${message}`);
   }
   const payload = await response.json();
-  return payload.dashboard;
+  return payload.job;
+}
+
+export async function fetchImportJob(id: string): Promise<ImportJob> {
+  const response = await fetch(`/api/import/${id}`);
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(`Import status failed: ${message}`);
+  }
+  const payload = await response.json();
+  return payload.job;
 }

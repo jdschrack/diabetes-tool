@@ -147,3 +147,27 @@ export type DashboardData = {
     events: MealEvent[];
   };
 };
+
+export type ImportStep = {
+  key: string;
+  label: string;
+  status: "pending" | "running" | "completed" | "failed";
+  message: string;
+};
+
+export type ImportJob = {
+  id: string;
+  filename: string;
+  status: "queued" | "running" | "completed" | "failed";
+  created_at: string;
+  updated_at: string;
+  message: string;
+  steps: ImportStep[];
+  stdout: string;
+  stderr: string;
+  summary: {
+    days: number;
+    readings: number;
+    latest_day: string | null;
+  } | null;
+};

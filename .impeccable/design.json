@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-06-24T00:00:00Z",
+  "title": "Design System: Tidepool Dashboard",
+  "extensions": {
+    "northStar": "Health Signals Console",
+    "designPosture": "Current proof-of-concept baseline, not final design destination.",
+    "colorMeta": {
+      "background-cool": {
+        "role": "neutral",
+        "displayName": "Cool App Background",
+        "canonical": "#f6f7f9",
+        "tonalRamp": ["#ffffff", "#fafbfc", "#f6f7f9", "#eef1f5", "#d9dee7"]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Primary Ink",
+        "canonical": "#22272f",
+        "tonalRamp": ["#667085", "#22272f", "#1f2937"]
+      },
+      "info": {
+        "role": "primary",
+        "displayName": "Signal Blue",
+        "canonical": "#2399c8",
+        "tonalRamp": ["#e7f5fa", "#67c3df", "#2399c8", "#1f4f8f"]
+      },
+      "success": {
+        "role": "secondary",
+        "displayName": "Clinical Green",
+        "canonical": "#278f68",
+        "tonalRamp": ["#eef7f2", "#65c99a", "#278f68"]
+      },
+      "danger": {
+        "role": "tertiary",
+        "displayName": "Risk Red",
+        "canonical": "#d64f4f",
+        "tonalRamp": ["#fff5f4", "#fdebea", "#f28a74", "#d64f4f", "#8f2f27"]
+      }
+    },
+    "typographyMeta": {
+      "headline": {
+        "displayName": "App Headline",
+        "purpose": "Application title only; not a marketing display style."
+      },
+      "title": {
+        "displayName": "Panel Title",
+        "purpose": "Compact section headings inside a dense product dashboard."
+      },
+      "body": {
+        "displayName": "Dashboard Body",
+        "purpose": "Explanatory copy, tables, metadata, and chart-adjacent text."
+      },
+      "label": {
+        "displayName": "Metric Label",
+        "purpose": "Small labels, table headers, import workflow states, and compact metadata."
+      }
+    },
+    "shadows": [],
+    "motion": [
+      {
+        "name": "future-state-transition",
+        "value": "150ms-250ms ease-out",
+        "purpose": "Future motion should communicate state changes only; no decorative page-load choreography."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "stacked-ui",
+        "value": "900px"
+      }
+    ],
+    "rules": [
+      "Treat current styling as proof-of-concept baseline, not the final design ceiling.",
+      "Use color semantically for health data, chart ranges, risk states, and workflow status.",
+      "Avoid gamified fitness-app language or visual treatment.",
+      "Elevation is intentionally unresolved until a deliberate redesign pass."
+    ]
+  },
+  "components": [
+    {
+      "name": "Panel",
+      "kind": "card",
+      "refersTo": "panel",
+      "description": "Flat content container for charts, tables, and metric groups.",
+      "html": "<article class=\"ds-panel\"><h2>Panel Title</h2><p>Supporting context.</p></article>",
+      "css": ".ds-panel { padding: 16px; border: 1px solid #d9dee7; border-radius: 8px; background: #fff; color: #22272f; } .ds-panel h2 { margin: 0 0 8px; font: 650 16px/1.3 Inter, system-ui, sans-serif; } .ds-panel p { margin: 0; color: #667085; font: 400 13px/1.45 Inter, system-ui, sans-serif; }"
+    },
+    {
+      "name": "Metric Tile",
+      "kind": "card",
+      "refersTo": "metric-tile",
+      "description": "Compact summary tile for scan-friendly numeric metrics.",
+      "html": "<div class=\"ds-metric\"><span>Time In Range</span><strong>84%</strong></div>",
+      "css": ".ds-metric { padding: 12px; border: 1px solid #eef1f5; border-radius: 6px; background: #fafbfc; } .ds-metric span { display: block; color: #667085; font: 400 12px/1.35 Inter, system-ui, sans-serif; } .ds-metric strong { display: block; margin-top: 6px; color: #22272f; font: 700 24px/1.15 Inter, system-ui, sans-serif; }"
+    },
+    {
+      "name": "Segmented Tabs",
+      "kind": "nav",
+      "refersTo": "button-primary",
+      "description": "Primary app navigation for Summary, Day Detail, and Journal.",
+      "html": "<nav class=\"ds-tabs\"><button class=\"active\">Summary</button><button>Day Detail</button></nav>",
+      "css": ".ds-tabs { display: inline-flex; gap: 4px; padding: 4px; border: 1px solid #d9dee7; border-radius: 8px; background: #fff; } .ds-tabs button { min-width: 112px; height: 34px; border: 0; border-radius: 6px; background: transparent; color: #667085; font: 650 13px/1 Inter, system-ui, sans-serif; } .ds-tabs button.active { background: #1f2937; color: #fff; }"
+    },
+    {
+      "name": "Carb Marker",
+      "kind": "custom",
+      "refersTo": "carb-marker",
+      "description": "Dark blue circular chart marker showing carb grams at meal time.",
+      "html": "<span class=\"ds-carb-marker\">30g</span>",
+      "css": ".ds-carb-marker { display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: 999px; background: #1f4f8f; color: #fff; font: 800 11px/1 Inter, system-ui, sans-serif; }"
+    }
+  ]
+}
