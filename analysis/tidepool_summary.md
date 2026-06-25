@@ -1,26 +1,26 @@
 # Tidepool SQLite Import Summary
 
-- Source: `/workspace/data/imports/TidepoolExport.json`
+- Source: `/workspace/data/imports/TidepoolExport (1).json`
 - Database: `analysis/tidepool.db`
-- Records: `7362`
-- Time range UTC: `2026-06-14T04:00:00Z` to `2026-06-24T20:11:57Z`
-- Time range local: `2026-06-14T00:00:00` to `2026-06-24T16:11:57`
+- Records: `7714`
+- Time range UTC: `2026-06-14T04:00:00Z` to `2026-06-25T12:51:43Z`
+- Time range local: `2026-06-14T00:00:00` to `2026-06-25T08:51:43`
 
 ## Record Counts
 
 | type | records |
 | --- | --- |
-| cbg | 3066 |
-| basal | 2579 |
+| cbg | 3266 |
+| basal | 2724 |
 | smbg | 1074 |
 | pumpSettings.basalSchedules | 195 |
 | pumpSettings.carbRatios | 117 |
 | pumpSettings.bgTargets | 78 |
-| food | 64 |
-| bolus | 61 |
-| dosingDecision | 53 |
+| food | 66 |
+| bolus | 63 |
+| dosingDecision | 55 |
 | pumpSettings.insulinSensitivities | 39 |
-| deviceEvent | 36 |
+| deviceEvent | 37 |
 
 ## Daily Glucose
 
@@ -40,7 +40,8 @@
 | 2026-06-21 | cbg | 287 | 170.5 | 85.0 | 351.0 | 0.0 | 67.9 | 32.1 |
 | 2026-06-22 | cbg | 286 | 147.2 | 80.0 | 235.0 | 0.0 | 83.6 | 16.4 |
 | 2026-06-23 | cbg | 287 | 164.1 | 74.0 | 304.0 | 0.0 | 66.9 | 33.1 |
-| 2026-06-24 | cbg | 195 | 166.9 | 97.0 | 286.0 | 0.0 | 56.9 | 43.1 |
+| 2026-06-24 | cbg | 288 | 164.4 | 85.0 | 286.0 | 0.0 | 53.5 | 46.5 |
+| 2026-06-25 | cbg | 107 | 177.0 | 129.0 | 214.0 | 0.0 | 44.9 | 55.1 |
 
 ## Daily Insulin
 
@@ -56,7 +57,8 @@
 | 2026-06-21 | 81.968 | 28.86 | 110.828 |
 | 2026-06-22 | 73.851 | 18.64 | 92.491 |
 | 2026-06-23 | 90.718 | 9.08 | 99.798 |
-| 2026-06-24 | 60.749 | 9.06 | 69.809 |
+| 2026-06-24 | 90.274 | 21.27 | 111.544 |
+| 2026-06-25 | 36.95 | 0.0 | 36.95 |
 
 ## Useful Views
 
