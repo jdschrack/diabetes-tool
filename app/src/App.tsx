@@ -11,14 +11,16 @@ const format = (value: number | null | undefined, digits = 1) =>
 type JournalRow = DashboardData["log"]["daily"][number];
 type ActiveTab = "today" | "summary" | "journal" | "imports" | "help";
 
-function parseRoute(): { tab: ActiveTab; period: string | null; day: string | null } {
+function parseRoute(): { tab: ActiveTab; period: string | null; day: string | null; start: string | null; end: string | null } {
   const path = window.location.pathname.replace(/^\/+|\/+$/g, "");
   const tab: ActiveTab = path === "summary" || path === "journal" || path === "imports" || path === "help" ? path : "today";
   const params = new URLSearchParams(window.location.search);
   return {
     tab,
     period: params.get("period"),
-    day: params.get("day")
+    day: params.get("day"),
+    start: params.get("start"),
+    end: params.get("end")
   };
 }
 
@@ -84,10 +86,10 @@ function yesNo(value: boolean | null | undefined) {
 }
 
 const mealMeta: Record<string, { label: string; window: string; color: string; soft: string }> = {
-  breakfast: { label: "Breakfast", window: "5:00a-10:30a", color: "#f59e0b", soft: "#fff7e6" },
+  breakfast: { label: "Breakfast", window: "6:30a-10:30a", color: "#f59e0b", soft: "#fff7e6" },
   lunch: { label: "Lunch", window: "10:30a-3:30p", color: "#0e9f8f", soft: "#ecfdf7" },
-  dinner: { label: "Dinner", window: "3:30p-10:30p", color: "#7c5ce7", soft: "#f3f0ff" },
-  "overnight/other": { label: "Overnight", window: "10:30p-5:00a", color: "#2f80ed", soft: "#edf5ff" }
+  dinner: { label: "Dinner", window: "3:30p-8:00p", color: "#7c5ce7", soft: "#f3f0ff" },
+  "overnight/other": { label: "Overnight", window: "8:00p-6:30a", color: "#2f80ed", soft: "#edf5ff" }
 };
 
 function mealLabel(meal: string) {
@@ -733,10 +735,10 @@ function dayBasalRateOption(rows: BasalHourly[], day: string): EChartsOption {
 
 function MealTable({ rows }: { rows: MealSummary[] }) {
   const windows: Record<string, string> = {
-    breakfast: "5:00a-10:30a",
+    breakfast: "6:30a-10:30a",
     lunch: "10:30a-3:30p",
-    dinner: "3:30p-10:30p",
-    "overnight/other": "10:30p-5:00a"
+    dinner: "3:30p-8:00p",
+    "overnight/other": "8:00p-6:30a"
   };
   return (
     <div className="table-scroll">
@@ -1191,6 +1193,9 @@ function PatternBoard({
         {Object.entries(mealMeta).map(([meal, meta]) => {
           const row = byMeal.get(meal);
           const previous = previousByMeal.get(meal);
+          const mealEvents = events.filter((event) => event.meal === meal);
+          const avgCarbs = averageNumeric(mealEvents, (event) => event.carbs);
+          const avgBolus = averageNumeric(mealEvents, (event) => event.bolus);
           return (
             <div className="pattern-card" style={{ "--meal-color": meta.color, "--meal-soft": meta.soft } as CSSProperties} key={meal}>
               <div className="pattern-card-header">
@@ -1202,13 +1207,25 @@ function PatternBoard({
               </div>
               <div className="pattern-spark">
                 <Sparkline
-                  values={events.filter((event) => event.meal === meal).map((event) => event.burden_score)}
+                  values={mealEvents.map((event) => event.burden_score)}
                   color={meta.color}
                   height={42}
                   label={`${meta.label} burden trend`}
                 />
               </div>
               <dl>
+                <div>
+                  <dt><span>Meal count</span><small>announced in window</small></dt>
+                  <dd><strong>{mealEvents.length}</strong></dd>
+                </div>
+                <div>
+                  <dt><span>Avg carbs</span><small>per meal event</small></dt>
+                  <dd><strong>{format(avgCarbs, 0)}g</strong></dd>
+                </div>
+                <div>
+                  <dt><span>Avg bolus</span><small>per meal event</small></dt>
+                  <dd><strong>{format(avgBolus, 1)}U</strong></dd>
+                </div>
                 <div>
                   <dt><span>Recovery avg</span><small>vs prev {periodLabel}</small></dt>
                   <dd><strong>{minutesLabel(row?.recovery_minutes_4h)}</strong><DeltaBadge current={row?.recovery_minutes_4h} previous={previous?.recovery_minutes_4h} digits={0} suffix="m" /></dd>
@@ -1369,6 +1386,8 @@ export default function App() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [activeTab, setActiveTab] = useState<ActiveTab>(() => parseRoute().tab);
   const [periodLabel, setPeriodLabel] = useState(() => parseRoute().period || "1 week");
+  const [summaryStart, setSummaryStart] = useState(() => parseRoute().start || "");
+  const [summaryEnd, setSummaryEnd] = useState(() => parseRoute().end || "");
   const [day, setDay] = useState(() => parseRoute().day || "");
   const [status, setStatus] = useState("");
   const [importJob, setImportJob] = useState<ImportJob | null>(null);
@@ -1378,11 +1397,16 @@ export default function App() {
       const route = parseRoute();
       const defaultPeriod = payload.period_summaries[0]?.label || "1 week";
       const routePeriod = payload.period_summaries.some((item) => item.label === route.period) ? route.period : defaultPeriod;
+      const selectedPeriod = payload.period_summaries.find((item) => item.label === (routePeriod || defaultPeriod));
       const latestDay = payload.tidepool.daily_ranges[payload.tidepool.daily_ranges.length - 1]?.day || "";
       const routeDay = payload.tidepool.daily_ranges.some((row) => row.day === route.day) ? route.day : latestDay;
+      const routeStart = payload.tidepool.daily_ranges.some((row) => row.day === route.start) ? route.start : selectedPeriod?.start || "";
+      const routeEnd = payload.tidepool.daily_ranges.some((row) => row.day === route.end) ? route.end : selectedPeriod?.end || "";
       setData(payload);
       setActiveTab(route.tab);
       setPeriodLabel(routePeriod || defaultPeriod);
+      setSummaryStart(routeStart || "");
+      setSummaryEnd(routeEnd || "");
       setDay(routeDay || latestDay);
     }).catch((error) => setStatus(error.message));
   }, []);
@@ -1393,6 +1417,8 @@ export default function App() {
       setActiveTab(route.tab);
       if (route.period) setPeriodLabel(route.period);
       if (route.day) setDay(route.day);
+      if (route.start) setSummaryStart(route.start);
+      if (route.end) setSummaryEnd(route.end);
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
@@ -1407,11 +1433,15 @@ export default function App() {
     if (activeTab === "summary" || activeTab === "journal") {
       params.set("period", periodLabel);
     }
+    if (activeTab === "summary" && summaryStart && summaryEnd) {
+      params.set("start", summaryStart);
+      params.set("end", summaryEnd);
+    }
     const nextUrl = `${routePath(activeTab)}${params.toString() ? `?${params.toString()}` : ""}`;
     if (`${window.location.pathname}${window.location.search}` !== nextUrl) {
       window.history.replaceState(null, "", nextUrl);
     }
-  }, [activeTab, data, day, periodLabel]);
+  }, [activeTab, data, day, periodLabel, summaryEnd, summaryStart]);
 
   useEffect(() => {
     if (!importJob || importJob.status === "completed" || importJob.status === "failed") return;
@@ -1443,37 +1473,58 @@ export default function App() {
   const firstAvailableDay = availableDays[0] || "";
   const lastAvailableDay = availableDays[availableDays.length - 1] || "";
   const days = data && period ? periodDays(period, data.tidepool.daily_ranges) : [];
+  const summaryDays = data?.tidepool.daily_ranges
+    .filter((row) => (!summaryStart || row.day >= summaryStart) && (!summaryEnd || row.day <= summaryEnd))
+    .map((row) => row.day) || [];
   const dailyRanges = data?.tidepool.daily_ranges.filter((row) => days.includes(row.day)) || [];
   const dailyBasal = data?.tidepool.basal_deviation.daily.filter((row) => days.includes(row.day)) || [];
   const dailyInsulin = data?.tidepool.daily_insulin.filter((row) => days.includes(row.day)) || [];
+  const summaryDailyRanges = data?.tidepool.daily_ranges.filter((row) => summaryDays.includes(row.day)) || [];
+  const summaryDailyBasal = data?.tidepool.basal_deviation.daily.filter((row) => summaryDays.includes(row.day)) || [];
+  const summaryDailyInsulin = data?.tidepool.daily_insulin.filter((row) => summaryDays.includes(row.day)) || [];
+  const summaryDailyFood = data?.tidepool.daily_food.filter((row) => summaryDays.includes(row.day)) || [];
   const selectedDayRange = data?.tidepool.daily_ranges.find((row) => row.day === day);
   const selectedDayBasal = data?.tidepool.basal_deviation.daily.find((row) => row.day === day);
   const selectedDayInsulin = data?.tidepool.daily_insulin.find((row) => row.day === day);
   const selectedDayFood = data?.tidepool.daily_food.find((row) => row.day === day);
   const mealRows = data?.meal_analysis.periods[periodLabel] || [];
   const selectedDayMeals = data?.meal_analysis.events.filter((row) => row.date === day) || [];
+  const selectedDayMealRows = summarizeMealEvents(selectedDayMeals);
   const periodMealEvents = data?.meal_analysis.events.filter((row) => days.includes(row.date)) || [];
+  const summaryMealEvents = data?.meal_analysis.events.filter((row) => summaryDays.includes(row.date)) || [];
+  const summaryMealRows = summarizeMealEvents(summaryMealEvents);
   const previousDays = (() => {
-    if (!period || !data) return [];
+    if (!data || !summaryDays.length) return [];
     const available = data.tidepool.daily_ranges.map((row) => row.day);
-    const startIndex = available.indexOf(period.start);
+    const startIndex = available.indexOf(summaryDays[0]);
     if (startIndex <= 0) return [];
-    return available.slice(Math.max(0, startIndex - days.length), startIndex);
+    return available.slice(Math.max(0, startIndex - summaryDays.length), startIndex);
   })();
   const previousMealRows = summarizeMealEvents(data?.meal_analysis.events.filter((row) => previousDays.includes(row.date)) || []);
   const previousDailyRanges = data?.tidepool.daily_ranges.filter((row) => previousDays.includes(row.day)) || [];
   const previousDailyBasal = data?.tidepool.basal_deviation.daily.filter((row) => previousDays.includes(row.day)) || [];
   const previousDailyInsulin = data?.tidepool.daily_insulin.filter((row) => previousDays.includes(row.day)) || [];
+  const summaryAvgGlucose = averageNumeric(summaryDailyRanges, (row) => row.avg_glucose);
+  const summaryTimeInRange = averageNumeric(summaryDailyRanges, (row) => row.in_range_pct);
+  const summaryExtraBasal = summaryDailyBasal.reduce((total, row) => total + row.extra_basal_units, 0);
+  const summaryExtraBasalPerDay = summaryDailyBasal.length ? summaryExtraBasal / summaryDailyBasal.length : null;
+  const summaryTotalInsulin = summaryDailyInsulin.reduce((total, row) => total + row.total_units, 0);
+  const summaryCorrectionLoad = summaryTotalInsulin ? (100 * summaryExtraBasal) / summaryTotalInsulin : null;
+  const summaryBolusUnits = summaryDailyInsulin.reduce((total, row) => total + row.bolus_units, 0);
+  const summaryCarbs = summaryDailyFood.reduce((total, row) => total + row.carbs, 0);
+  const summaryBolusPerCarb = summaryCarbs ? summaryBolusUnits / summaryCarbs : null;
+  const isCustomSummaryRange = Boolean(period && (summaryStart !== period.start || summaryEnd !== period.end));
+  const summaryRangeLabel = isCustomSummaryRange ? "Custom Range" : period?.label || "Summary";
   const recoveryByDay = days.map((periodDay) =>
     averageNumeric(
       data?.meal_analysis.events.filter((row) => row.date === periodDay) || [],
       (row) => row.recovery_minutes_4h
     )
   );
-  const periodMealBurden = averageNumeric(mealRows, (row) => row.burden_score);
-  const periodRecovery = averageNumeric(mealRows, (row) => row.recovery_minutes_4h);
-  const periodAreaOver180 = averageNumeric(mealRows, (row) => row.area_over_180_4h);
-  const periodLowRisk = averageNumeric(mealRows, (row) => row.low_after_correction_pct);
+  const periodMealBurden = averageNumeric(summaryMealRows, (row) => row.burden_score);
+  const periodRecovery = averageNumeric(summaryMealRows, (row) => row.recovery_minutes_4h);
+  const periodAreaOver180 = averageNumeric(summaryMealRows, (row) => row.area_over_180_4h);
+  const periodLowRisk = averageNumeric(summaryMealRows, (row) => row.low_after_correction_pct);
   const previousAvgGlucose = averageNumeric(previousDailyRanges, (row) => row.avg_glucose);
   const previousTimeInRange = averageNumeric(previousDailyRanges, (row) => row.in_range_pct);
   const previousExtraBasal = previousDailyBasal.reduce((total, row) => total + row.extra_basal_units, 0);
@@ -1560,9 +1611,54 @@ export default function App() {
               </div>
             )}
             {(activeTab === "summary" || activeTab === "journal") && (
-              <select value={periodLabel} onChange={(event) => setPeriodLabel(event.target.value)}>
+              <select
+                value={periodLabel}
+                onChange={(event) => {
+                  const nextLabel = event.target.value;
+                  setPeriodLabel(nextLabel);
+                  if (activeTab === "summary") {
+                    const selected = data.period_summaries.find((item) => item.label === nextLabel);
+                    if (selected) {
+                      setSummaryStart(selected.start);
+                      setSummaryEnd(selected.end);
+                    }
+                  }
+                }}
+              >
                 {data.period_summaries.map((item) => <option key={item.label}>{item.label}</option>)}
               </select>
+            )}
+            {activeTab === "summary" && (
+              <div className="range-picker">
+                <label>
+                  <span>Start</span>
+                  <input
+                    type="date"
+                    value={summaryStart}
+                    min={firstAvailableDay}
+                    max={lastAvailableDay}
+                    onChange={(event) => {
+                      const nextStart = event.target.value;
+                      setSummaryStart(nextStart);
+                      if (summaryEnd && nextStart > summaryEnd) setSummaryEnd(nextStart);
+                    }}
+                  />
+                </label>
+                <label>
+                  <span>End</span>
+                  <input
+                    type="date"
+                    value={summaryEnd}
+                    min={firstAvailableDay}
+                    max={lastAvailableDay}
+                    onChange={(event) => {
+                      const nextEnd = event.target.value;
+                      setSummaryEnd(nextEnd);
+                      if (summaryStart && nextEnd < summaryStart) setSummaryStart(nextEnd);
+                    }}
+                  />
+                </label>
+              </div>
             )}
           </div>
         </header>
@@ -1598,7 +1694,7 @@ export default function App() {
                 <EChart option={dayBasalRateOption(data.tidepool.basal_deviation.hourly, day)} height={390} />
               </article>
 
-              <PatternBoard rows={mealRows} previousRows={previousMealRows} events={periodMealEvents} periodLabel={periodLabel} />
+              <PatternBoard rows={selectedDayMealRows} previousRows={previousMealRows} events={selectedDayMeals} periodLabel={periodLabel} />
 
               <article className="panel full chart-panel">
                 <div className="section-heading">
@@ -1614,7 +1710,7 @@ export default function App() {
                   <span><strong>Extra basal</strong>{format(averageNumeric(selectedDayMeals, (row) => row.extra_basal_4h), 2)}U</span>
                   <span><strong>Burden</strong>{format(dayMealBurden, 1)}</span>
                 </div>
-                <MealRecoveryTable rows={mealRows} />
+                <MealRecoveryTable rows={selectedDayMealRows} />
               </article>
 
               <article className="panel full">
@@ -1646,35 +1742,35 @@ export default function App() {
           <section className="summary-page">
             <article className="panel full summary-hero">
               <div>
-                <h2>{period.label} Signal Summary</h2>
-                <p>{period.start} to {period.end} · {period.days_available}/{period.days_requested} days available · compared with the prior {period.label.toLowerCase()} when data exists</p>
+                <h2>{summaryRangeLabel} Signal Summary</h2>
+                <p>{summaryStart} to {summaryEnd} · {summaryDays.length} days available · compared with the prior {summaryDays.length}-day window when data exists</p>
               </div>
               <div className="summary-hero-stat">
                 <span>Time In Range</span>
-                <strong>{format(period.time_in_range_pct, 0)}%</strong>
-                <small>Avg CGM {format(period.avg_glucose, 0)} mg/dL</small>
+                <strong>{format(summaryTimeInRange, 0)}%</strong>
+                <small>Avg CGM {format(summaryAvgGlucose, 0)} mg/dL</small>
               </div>
             </article>
 
             <section className="summary-metric-grid">
-              <SummaryMetricCard label="Avg CGM" value={`${format(period.avg_glucose, 0)} mg/dL`} context="daily average glucose" values={dailyRanges.map((row) => row.avg_glucose)} current={period.avg_glucose} previous={previousAvgGlucose} color="#2f80ed" />
-              <SummaryMetricCard label="Time In Range" value={`${format(period.time_in_range_pct, 0)}%`} context="70-180 mg/dL" values={dailyRanges.map((row) => row.in_range_pct)} current={period.time_in_range_pct} previous={previousTimeInRange} color="#14905d" lowerIsBetter={false} deltaSuffix="%" />
-              <SummaryMetricCard label="Extra Basal" value={`${format(period.extra_basal_units, 1)}U`} context="above programmed basal" values={dailyBasal.map((row) => row.extra_basal_units)} current={period.extra_basal_units} previous={previousDailyBasal.length ? previousExtraBasal : null} color="#7c5ce7" deltaDigits={1} deltaSuffix="U" />
-              <SummaryMetricCard label="Extra / Day" value={`${format(period.extra_basal_per_day, 1)}U`} context="avg correction basal" values={dailyBasal.map((row) => row.extra_basal_units)} current={period.extra_basal_per_day} previous={previousExtraBasalPerDay} color="#7c5ce7" deltaDigits={1} deltaSuffix="U" />
-              <SummaryMetricCard label="Correction Load" value={`${format(period.correction_load_pct_tdi, 0)}%`} context="extra basal / total insulin" values={dailyRanges.map((row) => {
-                const basalRow = dailyBasal.find((item) => item.day === row.day);
-                const insulinRow = dailyInsulin.find((item) => item.day === row.day);
+              <SummaryMetricCard label="Avg CGM" value={`${format(summaryAvgGlucose, 0)} mg/dL`} context="daily average glucose" values={summaryDailyRanges.map((row) => row.avg_glucose)} current={summaryAvgGlucose} previous={previousAvgGlucose} color="#2f80ed" />
+              <SummaryMetricCard label="Time In Range" value={`${format(summaryTimeInRange, 0)}%`} context="70-180 mg/dL" values={summaryDailyRanges.map((row) => row.in_range_pct)} current={summaryTimeInRange} previous={previousTimeInRange} color="#14905d" lowerIsBetter={false} deltaSuffix="%" />
+              <SummaryMetricCard label="Extra Basal" value={`${format(summaryExtraBasal, 1)}U`} context="above programmed basal" values={summaryDailyBasal.map((row) => row.extra_basal_units)} current={summaryExtraBasal} previous={previousDailyBasal.length ? previousExtraBasal : null} color="#7c5ce7" deltaDigits={1} deltaSuffix="U" />
+              <SummaryMetricCard label="Extra / Day" value={`${format(summaryExtraBasalPerDay, 1)}U`} context="avg correction basal" values={summaryDailyBasal.map((row) => row.extra_basal_units)} current={summaryExtraBasalPerDay} previous={previousExtraBasalPerDay} color="#7c5ce7" deltaDigits={1} deltaSuffix="U" />
+              <SummaryMetricCard label="Correction Load" value={`${format(summaryCorrectionLoad, 0)}%`} context="extra basal / total insulin" values={summaryDailyRanges.map((row) => {
+                const basalRow = summaryDailyBasal.find((item) => item.day === row.day);
+                const insulinRow = summaryDailyInsulin.find((item) => item.day === row.day);
                 return basalRow && insulinRow?.total_units ? (100 * basalRow.extra_basal_units) / insulinRow.total_units : null;
-              })} current={period.correction_load_pct_tdi} previous={previousCorrectionLoad} color="#7c5ce7" deltaSuffix="%" />
-              <SummaryMetricCard label="Bolus/g" value={format(period.bolus_per_carb, 3)} context="observed bolus density" values={dailyRanges.map((row) => {
+              })} current={summaryCorrectionLoad} previous={previousCorrectionLoad} color="#7c5ce7" deltaSuffix="%" />
+              <SummaryMetricCard label="Bolus/g" value={format(summaryBolusPerCarb, 3)} context="observed bolus density" values={summaryDailyRanges.map((row) => {
                 const foodRow = data.tidepool.daily_food.find((item) => item.day === row.day);
-                const insulinRow = dailyInsulin.find((item) => item.day === row.day);
+                const insulinRow = summaryDailyInsulin.find((item) => item.day === row.day);
                 return foodRow?.carbs && insulinRow ? insulinRow.bolus_units / foodRow.carbs : null;
-              })} current={period.bolus_per_carb} previous={previousBolusPerCarb} color="#1f4f8f" deltaDigits={3} />
-              <SummaryMetricCard label="Meal Burden" value={format(periodMealBurden, 1)} context="post-meal cleanup score" values={mealRows.map((row) => row.burden_score)} current={periodMealBurden} previous={previousMealBurden} color="#f59e0b" />
-              <SummaryMetricCard label="Avg Recovery" value={minutesLabel(periodRecovery)} context="after crossing >180" values={mealRows.map((row) => row.recovery_minutes_4h)} current={periodRecovery} previous={previousRecovery} color="#f59e0b" deltaSuffix="m" />
-              <SummaryMetricCard label="Area >180" value={format(periodAreaOver180, 1)} context="above-range exposure" values={mealRows.map((row) => row.area_over_180_4h)} current={periodAreaOver180} previous={previousAreaOver180} color="#d64f4f" deltaDigits={1} />
-              <SummaryMetricCard label="Low Risk" value={`${format(periodLowRisk, 0)}%`} context="low after high correction" values={mealRows.map((row) => row.low_after_correction_pct)} current={periodLowRisk} previous={previousLowRisk} color="#d64f4f" deltaSuffix="%" />
+              })} current={summaryBolusPerCarb} previous={previousBolusPerCarb} color="#1f4f8f" deltaDigits={3} />
+              <SummaryMetricCard label="Meal Burden" value={format(periodMealBurden, 1)} context="post-meal cleanup score" values={summaryMealRows.map((row) => row.burden_score)} current={periodMealBurden} previous={previousMealBurden} color="#f59e0b" />
+              <SummaryMetricCard label="Avg Recovery" value={minutesLabel(periodRecovery)} context="after crossing >180" values={summaryMealRows.map((row) => row.recovery_minutes_4h)} current={periodRecovery} previous={previousRecovery} color="#f59e0b" deltaSuffix="m" />
+              <SummaryMetricCard label="Area >180" value={format(periodAreaOver180, 1)} context="above-range exposure" values={summaryMealRows.map((row) => row.area_over_180_4h)} current={periodAreaOver180} previous={previousAreaOver180} color="#d64f4f" deltaDigits={1} />
+              <SummaryMetricCard label="Low Risk" value={`${format(periodLowRisk, 0)}%`} context="low after high correction" values={summaryMealRows.map((row) => row.low_after_correction_pct)} current={periodLowRisk} previous={previousLowRisk} color="#d64f4f" deltaSuffix="%" />
             </section>
 
             <article className="panel full chart-panel">
@@ -1684,7 +1780,7 @@ export default function App() {
                   <p>Average delivered basal vs configured profile, plus delivered-minus-configured by hour.</p>
                 </div>
               </div>
-              <EChart option={hourlyRateOption(data.tidepool.basal_deviation.hourly, days)} height={380} />
+              <EChart option={hourlyRateOption(data.tidepool.basal_deviation.hourly, summaryDays)} height={380} />
             </article>
 
             <section className="summary-chart-grid">
@@ -1695,7 +1791,7 @@ export default function App() {
                     <p>Daily extra basal across the selected period.</p>
                   </div>
                 </div>
-                <EChart option={basalCorrectionOption(dailyBasal)} height={280} />
+                <EChart option={basalCorrectionOption(summaryDailyBasal)} height={280} />
               </article>
               <article className="panel chart-panel">
                 <div className="section-heading">
@@ -1704,7 +1800,7 @@ export default function App() {
                     <p>Average CGM by day with range reference lines.</p>
                   </div>
                 </div>
-                <EChart option={glucoseAverageOption(dailyRanges)} height={280} />
+                <EChart option={glucoseAverageOption(summaryDailyRanges)} height={280} />
               </article>
             </section>
 
@@ -1715,10 +1811,10 @@ export default function App() {
                   <p>Tidepool-style glucose buckets for every day in the selected period.</p>
                 </div>
               </div>
-              <EChart option={rangeOption(dailyRanges)} height={320} />
+              <EChart option={rangeOption(summaryDailyRanges)} height={320} />
             </article>
 
-            <PatternBoard rows={mealRows} previousRows={previousMealRows} events={periodMealEvents} periodLabel={periodLabel} />
+            <PatternBoard rows={summaryMealRows} previousRows={previousMealRows} events={summaryMealEvents} periodLabel={periodLabel} />
 
             <article className="panel full">
               <div className="section-heading">
@@ -1727,7 +1823,7 @@ export default function App() {
                   <p>Clustered meals, 4-hour glucose response, recovery after crossing above 180 mg/dL, and post-meal basal correction load.</p>
                 </div>
               </div>
-              <MealTable rows={mealRows} />
+              <MealTable rows={summaryMealRows} />
             </article>
           </section>
         )}

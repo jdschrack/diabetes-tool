@@ -340,11 +340,11 @@ def build_period_summaries(tidepool: dict[str, Any], log_data: dict[str, Any]) -
 
 def meal_name(value: datetime) -> str:
     hour = value.hour + value.minute / 60.0
-    if 5 <= hour < 10.5:
+    if 6.5 <= hour < 10.5:
         return "breakfast"
     if 10.5 <= hour < 15.5:
         return "lunch"
-    if 15.5 <= hour < 22.5:
+    if 15.5 <= hour < 20:
         return "dinner"
     return "overnight/other"
 
