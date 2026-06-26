@@ -90,6 +90,10 @@ export type MealEvent = {
   pre_bg: number | null;
   peak_4h: number | null;
   pct_high_4h: number | null;
+  minutes_over_250_4h: number | null;
+  sustained_over_250_2h: boolean;
+  review_carbs_per_unit: number | null;
+  estimated_missing_carbs: number | null;
   recovery_minutes_4h: number | null;
   area_over_180_4h: number | null;
   crossed_high_4h: boolean;
@@ -107,8 +111,45 @@ export type GlucosePoint = {
   value: number;
 };
 
+export type DailyEvent = {
+  id: string;
+  day: string;
+  local_time: string;
+  kind: "exercise" | "note";
+  label: string;
+  detail: string | null;
+  duration_minutes: number | null;
+};
+
+export type CronometerNutritionRow = {
+  date: string;
+  group: string;
+  energy_kcal: number | null;
+  net_carbs_g: number | null;
+  carbs_g: number | null;
+  fiber_g: number | null;
+  sugars_g: number | null;
+  added_sugars_g: number | null;
+  fat_g: number | null;
+  saturated_fat_g: number | null;
+  protein_g: number | null;
+  sodium_mg: number | null;
+  water_g: number | null;
+  completed: boolean | null;
+  row_hash: string | null;
+  source_file: string | null;
+  imported_at: string | null;
+  carb_calories: number;
+  fat_calories: number;
+  protein_calories: number;
+  macro_calories: number;
+  carb_calorie_pct: number | null;
+  fat_calorie_pct: number | null;
+  protein_calorie_pct: number | null;
+};
+
 export type DashboardData = {
-  generated_from: { db: string; log: string };
+  generated_from: { db: string; log: string; cronometer?: string };
   tidepool: {
     daily_ranges: DailyRange[];
     basal_deviation: {
@@ -118,6 +159,7 @@ export type DashboardData = {
     daily_insulin: DailyInsulin[];
     daily_food: DailyFood[];
     glucose_points: GlucosePoint[];
+    daily_events: DailyEvent[];
     totals: { readings: number };
   };
   log: {
@@ -140,6 +182,15 @@ export type DashboardData = {
       change: string;
     }>;
   };
+  cronometer: {
+    daily: CronometerNutritionRow[];
+    groups: CronometerNutritionRow[];
+    totals: {
+      rows: number;
+      days: number;
+      latest_day: string | null;
+    };
+  };
   period_summaries: PeriodSummary[];
   meal_analysis: {
     all: MealSummary[];
@@ -158,6 +209,7 @@ export type ImportStep = {
 export type ImportJob = {
   id: string;
   filename: string;
+  source?: string;
   status: "queued" | "running" | "completed" | "failed";
   created_at: string;
   updated_at: string;
@@ -169,5 +221,8 @@ export type ImportJob = {
     days: number;
     readings: number;
     latest_day: string | null;
+    imported?: number;
+    duplicates?: number;
+    total_rows?: number;
   } | null;
 };

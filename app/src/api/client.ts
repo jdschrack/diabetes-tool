@@ -23,6 +23,21 @@ export async function startTidepoolImport(file: File): Promise<ImportJob> {
   return payload.job;
 }
 
+export async function startCronometerImport(file: File): Promise<ImportJob> {
+  const form = new FormData();
+  form.append("file", file);
+  const response = await fetch("/api/import/cronometer", {
+    method: "POST",
+    body: form
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(`Cronometer import failed: ${message}`);
+  }
+  const payload = await response.json();
+  return payload.job;
+}
+
 export async function fetchImportJob(id: string): Promise<ImportJob> {
   const response = await fetch(`/api/import/${id}`);
   if (!response.ok) {

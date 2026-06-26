@@ -1,9 +1,10 @@
 import type { EChartsOption } from "echarts";
 import type { CSSProperties, ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
-import { fetchDashboard, fetchImportJob, startTidepoolImport } from "./api/client";
+import { fetchDashboard, fetchImportJob, startCronometerImport, startTidepoolImport } from "./api/client";
 import type { BasalHourly, DashboardData, DailyRange, ImportJob, MealSummary, PeriodSummary } from "./api/types";
 import { EChart } from "./charts/EChart";
+import { generateReportPdf } from "./reportPdf";
 
 const format = (value: number | null | undefined, digits = 1) =>
   value === null || value === undefined || Number.isNaN(value) ? "--" : value.toFixed(digits).replace(/\.0$/, "");
@@ -31,6 +32,22 @@ function routePath(tab: ActiveTab) {
 function periodDays(period: PeriodSummary | undefined, rows: DailyRange[]) {
   if (!period) return rows.map((row) => row.day);
   return rows.filter((row) => row.day >= period.start && row.day <= period.end).map((row) => row.day);
+}
+
+function formatLongDate(day: string) {
+  const [year, month, date] = day.split("-").map(Number);
+  if (!year || !month || !date) return day;
+  return new Date(year, month - 1, date).toLocaleDateString("en-US", {
+    month: "long",
+    day: "numeric",
+    year: "numeric"
+  });
+}
+
+function formatDateRange(start: string, end: string) {
+  if (!start && !end) return "";
+  if (start && end) return `${formatLongDate(start)} to ${formatLongDate(end)}`;
+  return start ? `From ${formatLongDate(start)}` : `Through ${formatLongDate(end)}`;
 }
 
 function sumField(rows: JournalRow[], key: keyof JournalRow) {
@@ -191,8 +208,8 @@ function rangeOption(rows: DailyRange[]): EChartsOption {
     ["Very Low", "very_low_pct", "#d64f4f", [0, 0, 0, 0]],
     ["Low", "low_pct", "#f28a74", [0, 0, 0, 0]],
     ["In Range", "in_range_pct", "#65c99a", [0, 0, 0, 0]],
-    ["High", "high_pct", "#9f7ce0", [0, 0, 0, 0]],
-    ["Very High", "very_high_pct", "#7858d9", [5, 5, 0, 0]]
+    ["High", "high_pct", "#f59e0b", [0, 0, 0, 0]],
+    ["Very High", "very_high_pct", "#d97706", [5, 5, 0, 0]]
   ];
   return {
     tooltip: {
@@ -394,24 +411,37 @@ function hourlyRateOption(hourly: BasalHourly[], days: string[]): EChartsOption 
   };
 }
 
-function dayGlucoseOption(data: DashboardData, day: string, meals: DashboardData["meal_analysis"]["events"]): EChartsOption {
+function dayGlucoseOption(
+  data: DashboardData,
+  day: string,
+  meals: DashboardData["meal_analysis"]["events"],
+  events: DashboardData["tidepool"]["daily_events"]
+): EChartsOption {
   const rows = data.tidepool.glucose_points.filter((row) => row.day === day);
-  const mealMarkers = meals.map((meal) => {
-    const mealTime = new Date(meal.start).getTime();
+  const nearestGlucose = (time: string, fallback: number | null | undefined = 90) => {
+    const eventTime = new Date(time).getTime();
     const nearest = rows.reduce(
       (best, row) => {
-        const diff = Math.abs(new Date(row.local_time).getTime() - mealTime);
+        const diff = Math.abs(new Date(row.local_time).getTime() - eventTime);
         return !best || diff < best.diff ? { diff, value: row.value } : best;
       },
       null as { diff: number; value: number } | null
     );
+    return nearest?.value ?? fallback ?? 90;
+  };
+  const mealMarkers = meals.map((meal) => {
     return {
-      value: [meal.start, nearest?.value ?? meal.pre_bg ?? 90, meal.carbs, meal.meal],
+      value: [meal.start, nearestGlucose(meal.start, meal.pre_bg), meal.carbs, meal.meal],
       itemStyle: { color: "#1f4f8f" }
     };
   });
+  const eventMarkers = events.map((event) => ({
+    value: [event.local_time, nearestGlucose(event.local_time), event.label, event.kind, event.detail],
+    symbol: event.kind === "exercise" ? "triangle" : "diamond",
+    itemStyle: { color: event.kind === "exercise" ? "#14905d" : "#f59e0b" }
+  }));
   return {
-    color: ["#14905d", "#1f4f8f"],
+    color: ["#14905d", "#1f4f8f", "#f59e0b"],
     tooltip: {
       trigger: "axis",
       backgroundColor: "rgba(255,255,255,0.96)",
@@ -424,6 +454,10 @@ function dayGlucoseOption(data: DashboardData, day: string, meals: DashboardData
             const typed = item as unknown as { seriesName: string; value: [string, number, number?, string?] };
             if (typed.seriesName === "Carbs") {
               return `Carbs: ${format(typed.value[2], 0)}g (${typed.value[3]})`;
+            }
+            if (typed.seriesName === "Events") {
+              const event = item as unknown as { value: [string, number, string, string, string | null] };
+              return `${event.value[2]}: ${event.value[4] || event.value[3]}`;
             }
             return `CGM: ${format(typed.value[1], 0)} mg/dL`;
           })
@@ -451,9 +485,9 @@ function dayGlucoseOption(data: DashboardData, day: string, meals: DashboardData
       seriesIndex: 0,
       dimension: 1,
       pieces: [
-        { lt: 54, color: "#d64f4f" },
-        { gt: 250, color: "#7858d9" },
-        { gte: 54, lte: 250, color: "#278f68" }
+        { lt: 70, color: "#d64f4f" },
+        { gt: 180, color: "#f59e0b" },
+        { gte: 70, lte: 180, color: "#278f68" }
       ]
     },
     series: [
@@ -487,6 +521,22 @@ function dayGlucoseOption(data: DashboardData, day: string, meals: DashboardData
           fontWeight: 800,
           fontSize: 11,
           formatter: (params) => `${format((params as unknown as { value: [string, number, number] }).value[2], 0)}g`
+        },
+        tooltip: { trigger: "item" }
+      },
+      {
+        name: "Events",
+        type: "scatter",
+        data: eventMarkers,
+        z: 12,
+        symbolSize: 18,
+        label: {
+          show: true,
+          position: "top",
+          color: "#172033",
+          fontWeight: 800,
+          fontSize: 11,
+          formatter: (params) => (params as unknown as { value: [string, number, string] }).value[2]
         },
         tooltip: { trigger: "item" }
       }
@@ -562,8 +612,8 @@ function dayRangeOption(row: DailyRange | undefined): EChartsOption {
     ["Very Low", row?.very_low_pct ?? 0, "#d64f4f"],
     ["Low", row?.low_pct ?? 0, "#f28a74"],
     ["In Range", row?.in_range_pct ?? 0, "#65c99a"],
-    ["High", row?.high_pct ?? 0, "#9f7ce0"],
-    ["Very High", row?.very_high_pct ?? 0, "#7858d9"]
+    ["High", row?.high_pct ?? 0, "#f59e0b"],
+    ["Very High", row?.very_high_pct ?? 0, "#d97706"]
   ];
   return {
     tooltip: { trigger: "axis" },
@@ -575,6 +625,127 @@ function dayRangeOption(row: DailyRange | undefined): EChartsOption {
         type: "bar",
         data: buckets.map(([_name, value, color]) => ({ value, itemStyle: { color } })).reverse(),
         label: { show: true, formatter: "{c}%" }
+      }
+    ]
+  };
+}
+
+function macroPieOption(row: DashboardData["cronometer"]["daily"][number] | undefined): EChartsOption {
+  const totalCalories = row?.energy_kcal || row?.macro_calories || 0;
+  const items = [
+    { name: "Carbs", grams: row?.carbs_g, calories: row?.carb_calories || 0, color: "#f59e0b" },
+    { name: "Fat", grams: row?.fat_g, calories: row?.fat_calories || 0, color: "#7c5ce7" },
+    { name: "Protein", grams: row?.protein_g, calories: row?.protein_calories || 0, color: "#14905d" }
+  ];
+  return {
+    color: items.map((item) => item.color),
+    tooltip: {
+      trigger: "item",
+      formatter: (params: unknown) => {
+        const typed = params as { name: string; value: number };
+        const item = items.find((entry) => entry.name === typed.name);
+        const percent = totalCalories ? (100 * Number(typed.value || 0)) / totalCalories : 0;
+        return `${typed.name}: ${format(percent, 0)}% · ${format(item?.grams, 1)}g · ${format(Number(typed.value), 0)} kcal`;
+      }
+    },
+    graphic: [
+      {
+        type: "text",
+        left: "center",
+        top: "45%",
+        style: {
+          text: format(totalCalories, 0),
+          fill: "#172033",
+          fontSize: 24,
+          fontWeight: 800,
+          align: "center"
+        }
+      },
+      {
+        type: "text",
+        left: "center",
+        top: "56%",
+        style: {
+          text: "kcal",
+          fill: "#657186",
+          fontSize: 11,
+          fontWeight: 700,
+          align: "center"
+        }
+      }
+    ],
+    series: [
+      {
+        name: "Macro calories",
+        type: "pie",
+        radius: ["56%", "82%"],
+        center: ["50%", "50%"],
+        minAngle: 3,
+        avoidLabelOverlap: false,
+        label: { show: false },
+        labelLine: { show: false },
+        data: items.map((item) => ({
+          name: item.name,
+          value: item.calories,
+          itemStyle: { color: item.color }
+        }))
+      }
+    ]
+  };
+}
+
+function macroSummaryOption(rows: DashboardData["cronometer"]["daily"]): EChartsOption {
+  const sorted = rows.slice().sort((a, b) => a.date.localeCompare(b.date));
+  return {
+    tooltip: {
+      trigger: "axis",
+      backgroundColor: "rgba(255,255,255,0.96)",
+      borderColor: "#dfe6ef",
+      textStyle: { color: "#172033" }
+    },
+    legend: { top: 0, right: 12, icon: "roundRect", textStyle: { color: "#657186" } },
+    grid: { left: 52, right: 24, top: 42, bottom: 36 },
+    xAxis: {
+      type: "category",
+      data: sorted.map((row) => row.date.slice(5)),
+      axisTick: { show: false },
+      axisLine: { lineStyle: { color: "#dfe6ef" } },
+      axisLabel: { color: "#657186" }
+    },
+    yAxis: {
+      type: "value",
+      axisLabel: { formatter: "{value}", color: "#657186" },
+      splitLine: { lineStyle: { color: "#eef2f6" } }
+    },
+    series: [
+      {
+        name: "Carbs kcal",
+        type: "bar",
+        stack: "macro",
+        data: sorted.map((row) => row.carb_calories),
+        itemStyle: { color: "#f59e0b" }
+      },
+      {
+        name: "Fat kcal",
+        type: "bar",
+        stack: "macro",
+        data: sorted.map((row) => row.fat_calories),
+        itemStyle: { color: "#7c5ce7" }
+      },
+      {
+        name: "Protein kcal",
+        type: "bar",
+        stack: "macro",
+        data: sorted.map((row) => row.protein_calories),
+        itemStyle: { color: "#14905d" }
+      },
+      {
+        name: "Total kcal",
+        type: "line",
+        smooth: true,
+        data: sorted.map((row) => row.energy_kcal),
+        lineStyle: { color: "#1f4f8f", width: 2.5 },
+        itemStyle: { color: "#1f4f8f" }
       }
     ]
   };
@@ -801,6 +972,9 @@ function MealEventTable({ rows }: { rows: DashboardData["meal_analysis"]["events
             <th>Carbs</th>
             <th>Bolus</th>
             <th>Carbs/U</th>
+            <th>&gt;250 Time</th>
+            <th>Review g/U</th>
+            <th>Carb Gap</th>
             <th>Pre BG</th>
             <th>4h Peak</th>
             <th>% &gt;180</th>
@@ -822,6 +996,9 @@ function MealEventTable({ rows }: { rows: DashboardData["meal_analysis"]["events
               <td>{format(row.carbs, 0)}</td>
               <td>{format(row.bolus, 2)}</td>
               <td>{row.bolus ? format(row.carbs / row.bolus, 1) : "--"}</td>
+              <td>{row.sustained_over_250_2h ? minutesLabel(row.minutes_over_250_4h) : "No"}</td>
+              <td>{row.sustained_over_250_2h ? format(row.review_carbs_per_unit, 1) : "--"}</td>
+              <td>{row.sustained_over_250_2h ? `${format(row.estimated_missing_carbs, 0)}g` : "--"}</td>
               <td>{format(row.pre_bg, 0)}</td>
               <td>{format(row.peak_4h, 0)}</td>
               <td>{format(row.pct_high_4h, 0)}%</td>
@@ -877,6 +1054,248 @@ function JournalTable({ rows }: { rows: DashboardData["log"]["daily"] }) {
         </tbody>
       </table>
     </div>
+  );
+}
+
+function CronometerTable({ rows }: { rows: DashboardData["cronometer"]["groups"] }) {
+  const displayRows = rows.slice(0, 18);
+  return (
+    <div className="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Group</th>
+            <th>Calories</th>
+            <th>Net Carbs</th>
+            <th>Carbs</th>
+            <th>Fiber</th>
+            <th>Protein</th>
+            <th>Fat</th>
+            <th>Completed</th>
+          </tr>
+        </thead>
+        <tbody>
+          {displayRows.map((row) => (
+            <tr key={`${row.date}-${row.group}-${row.row_hash}`}>
+              <td><strong>{row.date}</strong></td>
+              <td>{foodGroupLabel(row.group)}</td>
+              <td>{format(row.energy_kcal, 0)}</td>
+              <td>{format(row.net_carbs_g, 1)}g</td>
+              <td>{format(row.carbs_g, 1)}g</td>
+              <td>{format(row.fiber_g, 1)}g</td>
+              <td>{format(row.protein_g, 1)}g</td>
+              <td>{format(row.fat_g, 1)}g</td>
+              <td>{row.completed === null ? "--" : row.completed ? "Yes" : "No"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function foodGroupLabel(group: string) {
+  return group.toLowerCase() === "uncategorized" ? "Snacks" : group;
+}
+
+function foodGroupMeta(group: string) {
+  const label = foodGroupLabel(group).toLowerCase();
+  if (label.includes("breakfast")) return { color: "#14905d", soft: "rgba(20,144,93,0.08)" };
+  if (label.includes("lunch")) return { color: "#2f80ed", soft: "rgba(47,128,237,0.08)" };
+  if (label.includes("dinner")) return { color: "#f59e0b", soft: "rgba(245,158,11,0.1)" };
+  if (label.includes("snack")) return { color: "#7c5ce7", soft: "rgba(124,92,231,0.08)" };
+  return { color: "#1f4f8f", soft: "rgba(31,79,143,0.07)" };
+}
+
+const foodGroupSlots = ["Breakfast", "Lunch", "Dinner", "Snacks"];
+
+function zeroFoodGroupRow(group: string): DashboardData["cronometer"]["groups"][number] {
+  return {
+    date: "",
+    group,
+    energy_kcal: 0,
+    net_carbs_g: 0,
+    carbs_g: 0,
+    fiber_g: 0,
+    sugars_g: 0,
+    added_sugars_g: 0,
+    fat_g: 0,
+    saturated_fat_g: 0,
+    protein_g: 0,
+    sodium_mg: 0,
+    water_g: 0,
+    completed: null,
+    row_hash: `empty-${group}`,
+    source_file: null,
+    imported_at: null,
+    carb_calories: 0,
+    fat_calories: 0,
+    protein_calories: 0,
+    macro_calories: 0,
+    carb_calorie_pct: null,
+    fat_calorie_pct: null,
+    protein_calorie_pct: null
+  };
+}
+
+function foodRowsBySlot(rows: DashboardData["cronometer"]["groups"]) {
+  return foodGroupSlots.map((slot) => {
+    const match = rows.find((row) => foodGroupLabel(row.group).toLowerCase() === slot.toLowerCase());
+    return match || zeroFoodGroupRow(slot);
+  });
+}
+
+function macroItems(row: DashboardData["cronometer"]["daily"][number]) {
+  const totalCalories = row.energy_kcal || row.macro_calories || 0;
+  return [
+    { name: "Carbs", grams: row.carbs_g, calories: row.carb_calories, color: "#f59e0b" },
+    { name: "Fat", grams: row.fat_g, calories: row.fat_calories, color: "#7c5ce7" },
+    { name: "Protein", grams: row.protein_g, calories: row.protein_calories, color: "#14905d" }
+  ].map((item) => ({
+    ...item,
+    percent: totalCalories ? (100 * item.calories) / totalCalories : 0
+  }));
+}
+
+function MacroBreakdown({ row }: { row: DashboardData["cronometer"]["daily"][number] }) {
+  return (
+    <div className="macro-breakdown" aria-label="Macronutrient calorie breakdown">
+      {macroItems(row).map((item) => (
+        <div className="macro-row" key={item.name}>
+          <div className="macro-row-head">
+            <span><i style={{ background: item.color }} />{item.name}</span>
+            <strong>{format(item.percent, 0)}%</strong>
+          </div>
+          <div className="macro-bar" aria-hidden="true">
+            <span style={{ width: `${Math.max(0, Math.min(100, item.percent))}%`, background: item.color }} />
+          </div>
+          <p>{format(item.grams, 1)}g · {format(item.calories, 0)} kcal</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function MacroSplitBar({ row }: { row: DashboardData["cronometer"]["groups"][number] }) {
+  const items = macroItems(row);
+  return (
+    <span className="food-macro-bar" aria-hidden="true">
+      {items.map((item) => (
+        <i key={item.name} style={{ width: `${Math.max(0, Math.min(100, item.percent))}%`, background: item.color }} />
+      ))}
+    </span>
+  );
+}
+
+function FoodLogMacroCards({ rows }: { rows: DashboardData["cronometer"]["groups"] }) {
+  const displayRows = foodRowsBySlot(rows);
+  return (
+    <div className="macro-food-log">
+      <div className="macro-subheading">
+        <strong>Food log detail</strong>
+      </div>
+      <div className="food-log-card-grid">
+        {displayRows.map((row) => {
+          const meta = foodGroupMeta(row.group);
+          const items = macroItems(row);
+          const hasData = (row.energy_kcal || 0) > 0 || (row.carbs_g || 0) > 0 || (row.fat_g || 0) > 0 || (row.protein_g || 0) > 0;
+          return (
+            <section className="food-log-card" style={{ "--meal-color": meta.color, "--meal-soft": meta.soft } as CSSProperties} key={`${row.date}-${row.group}-${row.row_hash}`}>
+              <header>
+                <div>
+                  <h3>{foodGroupLabel(row.group)}</h3>
+                  <small>{hasData ? `${format(row.energy_kcal, 0)} kcal · ${row.completed === null ? "completion unknown" : row.completed ? "completed" : "in progress"}` : "0 kcal · no data"}</small>
+                </div>
+                <i className="meal-dot" />
+              </header>
+              <dl>
+                {items.map((item) => (
+                  <div key={item.name}>
+                    <dt>{item.name}</dt>
+                    <dd>{format(item.grams, 1)}g · {format(item.calories, 0)} kcal</dd>
+                  </div>
+                ))}
+                <div>
+                  <dt>Macro split</dt>
+                  <dd>{items.map((item) => format(item.percent, 0)).join(" / ")}%</dd>
+                  <MacroSplitBar row={row} />
+                </div>
+              </dl>
+            </section>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function MacroCaloriesPanel({
+  title,
+  subtitle,
+  row,
+  groupRows = [],
+  trendRows = [],
+  emptyMessage,
+  mode
+}: {
+  title: string;
+  subtitle: string;
+  row: DashboardData["cronometer"]["daily"][number] | undefined;
+  groupRows?: DashboardData["cronometer"]["groups"];
+  trendRows?: DashboardData["cronometer"]["daily"];
+  emptyMessage: string;
+  mode: "day" | "summary";
+}) {
+  const completedRows = groupRows.filter((item) => item.completed).length;
+  return (
+    <article className="panel full chart-panel macro-panel">
+      <div className="section-heading macro-heading">
+        <div>
+          <h2>{title}</h2>
+          <p>{subtitle}</p>
+        </div>
+      </div>
+      {row ? (
+        <div className="macro-layout">
+          <section className="macro-hero" aria-label="Macro calorie overview">
+            <div className="macro-donut">
+              <EChart option={macroPieOption(row)} height={260} />
+            </div>
+            <div className="macro-total">
+              <span>Total intake</span>
+              <strong>{format(row.energy_kcal, 0)}<small> kcal</small></strong>
+              <p>{format(row.net_carbs_g, 1)}g net carbs · {format(row.fiber_g, 1)}g fiber</p>
+            </div>
+            <div className="macro-kpis">
+              <span><strong>{format(row.sodium_mg, 0)}</strong>Sodium mg</span>
+              <span><strong>{format(row.water_g, 0)}</strong>Water g</span>
+              <span><strong>{mode === "day" ? groupRows.length : trendRows.length}</strong>{mode === "day" ? "Food rows" : "Days"}</span>
+              {mode === "day" && <span><strong>{completedRows}</strong>Completed</span>}
+            </div>
+          </section>
+          {mode === "day" ? (
+            <section className="macro-day-detail" aria-label="Daily food detail">
+              <MacroBreakdown row={row} />
+              <FoodLogMacroCards rows={groupRows} />
+            </section>
+          ) : (
+            <section className="macro-support" aria-label="Summary macro trend">
+              <MacroBreakdown row={row} />
+              <div className="macro-trend">
+                <div className="macro-subheading">
+                  <strong>Daily calorie trend</strong>
+                  <span>{trendRows.length} imported days</span>
+                </div>
+                <EChart option={macroSummaryOption(trendRows)} height={260} />
+              </div>
+            </section>
+          )}
+        </div>
+      ) : (
+        <p>{emptyMessage}</p>
+      )}
+    </article>
   );
 }
 
@@ -966,6 +1385,46 @@ function MetricDefinitions() {
           <p>Extra basal as a percentage of estimated total insulin for the period. Higher values mean more insulin came through automated basal correction.</p>
         </div>
         <div>
+          <h3>Meal</h3>
+          <p>Meal window label assigned from the event time, such as breakfast, lunch, dinner, or overnight/other.</p>
+        </div>
+        <div>
+          <h3>Carbs</h3>
+          <p>Announced carbohydrates in grams for that meal event.</p>
+        </div>
+        <div>
+          <h3>Bolus</h3>
+          <p>Bolus insulin associated with the meal event, measured in units.</p>
+        </div>
+        <div>
+          <h3>Carbs/U</h3>
+          <p>Announced carbs divided by associated bolus units. This is the observed event ratio, not necessarily the programmed pump ratio.</p>
+        </div>
+        <div>
+          <h3>&gt;250 Time</h3>
+          <p>Time spent above 250 mg/dL during the 4-hour post-meal window. The table only displays this duration when it stays above 250 for at least 2 hours.</p>
+        </div>
+        <div>
+          <h3>Review g/U</h3>
+          <p>Back-calculated carbs per unit to review when the meal has sustained glucose above 250. It estimates what ratio the event looked like based on announced carbs plus the carb gap.</p>
+        </div>
+        <div>
+          <h3>Carb Gap</h3>
+          <p>Estimated missing carbohydrates for sustained above-250 events. It is intended as a review signal for missed or undercounted carbs, not a dosing instruction.</p>
+        </div>
+        <div>
+          <h3>Pre BG</h3>
+          <p>Nearest CGM value before or at the meal start used as the pre-meal glucose reference.</p>
+        </div>
+        <div>
+          <h3>4h Peak</h3>
+          <p>Highest CGM value observed during the 4-hour window after the meal start.</p>
+        </div>
+        <div>
+          <h3>% &gt;180</h3>
+          <p>Percent of CGM readings above 180 mg/dL during the 4-hour post-meal window.</p>
+        </div>
+        <div>
           <h3>Area &gt;180</h3>
           <p>Estimated glucose exposure above 180 mg/dL during a meal window. It combines how high glucose went and how long it stayed elevated.</p>
         </div>
@@ -984,6 +1443,10 @@ function MetricDefinitions() {
         <div>
           <h3>Low Risk</h3>
           <p>Percent of meal windows that went above 180 and later dropped below 70 within the extended post-meal window.</p>
+        </div>
+        <div>
+          <h3>Low After High</h3>
+          <p>Whether a selected-day meal window crossed above 180 and later dropped below 70 in the extended post-meal review window.</p>
         </div>
         <div>
           <h3>Meal Burden</h3>
@@ -1023,7 +1486,15 @@ function ImportWorkflow({ job }: { job: ImportJob | null }) {
       {job.summary && (
         <div className="import-summary">
           <span>{job.summary.days} days</span>
-          <span>{job.summary.readings} CGM readings</span>
+          {job.source === "cronometer" ? (
+            <>
+              <span>{job.summary.imported ?? 0} imported</span>
+              <span>{job.summary.duplicates ?? 0} duplicates skipped</span>
+              <span>{job.summary.total_rows ?? job.summary.readings} nutrition rows</span>
+            </>
+          ) : (
+            <span>{job.summary.readings} CGM readings</span>
+          )}
           <span>latest {job.summary.latest_day || "--"}</span>
         </div>
       )}
@@ -1048,6 +1519,7 @@ function TodayStack({
   periodRanges,
   periodBasal,
   periodInsulin,
+  periodFood,
   periodRecovery
 }: {
   range: DailyRange | undefined;
@@ -1059,6 +1531,7 @@ function TodayStack({
   periodRanges: DailyRange[];
   periodBasal: DashboardData["tidepool"]["basal_deviation"]["daily"];
   periodInsulin: DashboardData["tidepool"]["daily_insulin"];
+  periodFood: DashboardData["tidepool"]["daily_food"];
   periodRecovery: Array<number | null>;
 }) {
   const basalPct = insulin?.total_units ? (100 * insulin.basal_units) / insulin.total_units : null;
@@ -1066,11 +1539,12 @@ function TodayStack({
   const correctionLoad = insulin?.total_units && basal ? (100 * basal.extra_basal_units) / insulin.total_units : null;
   const insulinByDay = new Map(periodInsulin.map((row) => [row.day, row]));
   const basalByDay = new Map(periodBasal.map((row) => [row.day, row]));
+  const foodByDay = new Map(periodFood.map((row) => [row.day, row]));
   return (
     <aside className="today-stack panel">
       <div className="section-heading">
         <div>
-          <h2>Today Stack</h2>
+          <h2>Day Summary Stack</h2>
           <p>Current day signals</p>
         </div>
       </div>
@@ -1083,6 +1557,17 @@ function TodayStack({
           <strong>{format(range?.in_range_pct, 0)}%</strong>
           <div className="stack-trend">
             <Sparkline values={periodRanges.map((row) => row.in_range_pct)} color="#14905d" label="Time in range trend" unit="%" />
+            <em>{periodRanges.length}-day trend</em>
+          </div>
+        </div>
+        <div className="stack-row amber" title="Total carbs logged for the selected day.">
+          <div>
+            <span>Total Carbs</span>
+            <small>{food?.meals || 0} meal entries</small>
+          </div>
+          <strong>{format(food?.carbs, 0)}<small> g</small></strong>
+          <div className="stack-trend">
+            <Sparkline values={periodRanges.map((row) => foodByDay.get(row.day)?.carbs)} color="#f59e0b" label="Total carbs trend" unit=" g" />
             <em>{periodRanges.length}-day trend</em>
           </div>
         </div>
@@ -1433,7 +1918,7 @@ export default function App() {
     if (activeTab === "summary" || activeTab === "journal") {
       params.set("period", periodLabel);
     }
-    if (activeTab === "summary" && summaryStart && summaryEnd) {
+    if ((activeTab === "summary" || activeTab === "journal") && summaryStart && summaryEnd) {
       params.set("start", summaryStart);
       params.set("end", summaryEnd);
     }
@@ -1452,8 +1937,11 @@ export default function App() {
         if (job.status === "completed") {
           const payload = await fetchDashboard();
           setData(payload);
-          setStatus(`Imported ${job.filename}`);
-          setDay(payload.tidepool.daily_ranges[payload.tidepool.daily_ranges.length - 1]?.day || "");
+          const duplicateLabel = job.summary?.duplicates !== undefined ? ` · ${job.summary.duplicates} duplicates skipped` : "";
+          setStatus(`Imported ${job.filename}${duplicateLabel}`);
+          if (job.source !== "cronometer") {
+            setDay(payload.tidepool.daily_ranges[payload.tidepool.daily_ranges.length - 1]?.day || "");
+          }
         }
         if (job.status === "failed") {
           setStatus(`Import failed: ${job.message}`);
@@ -1479,6 +1967,7 @@ export default function App() {
   const dailyRanges = data?.tidepool.daily_ranges.filter((row) => days.includes(row.day)) || [];
   const dailyBasal = data?.tidepool.basal_deviation.daily.filter((row) => days.includes(row.day)) || [];
   const dailyInsulin = data?.tidepool.daily_insulin.filter((row) => days.includes(row.day)) || [];
+  const dailyFood = data?.tidepool.daily_food.filter((row) => days.includes(row.day)) || [];
   const summaryDailyRanges = data?.tidepool.daily_ranges.filter((row) => summaryDays.includes(row.day)) || [];
   const summaryDailyBasal = data?.tidepool.basal_deviation.daily.filter((row) => summaryDays.includes(row.day)) || [];
   const summaryDailyInsulin = data?.tidepool.daily_insulin.filter((row) => summaryDays.includes(row.day)) || [];
@@ -1487,6 +1976,38 @@ export default function App() {
   const selectedDayBasal = data?.tidepool.basal_deviation.daily.find((row) => row.day === day);
   const selectedDayInsulin = data?.tidepool.daily_insulin.find((row) => row.day === day);
   const selectedDayFood = data?.tidepool.daily_food.find((row) => row.day === day);
+  const selectedDayNutrition = data?.cronometer.daily.find((row) => row.date === day);
+  const selectedDayNutritionGroups = data?.cronometer.groups.filter((row) => row.date === day) || [];
+  const summaryNutrition = data?.cronometer.daily.filter((row) => summaryDays.includes(row.date)) || [];
+  const summaryNutritionTotal = summaryNutrition.length
+    ? {
+        date: `${summaryStart || summaryNutrition[0]?.date || ""}..${summaryEnd || summaryNutrition[summaryNutrition.length - 1]?.date || ""}`,
+        group: "Total",
+        energy_kcal: summaryNutrition.reduce((total, row) => total + (row.energy_kcal || 0), 0),
+        net_carbs_g: summaryNutrition.reduce((total, row) => total + (row.net_carbs_g || 0), 0),
+        carbs_g: summaryNutrition.reduce((total, row) => total + (row.carbs_g || 0), 0),
+        fiber_g: summaryNutrition.reduce((total, row) => total + (row.fiber_g || 0), 0),
+        sugars_g: summaryNutrition.reduce((total, row) => total + (row.sugars_g || 0), 0),
+        added_sugars_g: summaryNutrition.reduce((total, row) => total + (row.added_sugars_g || 0), 0),
+        fat_g: summaryNutrition.reduce((total, row) => total + (row.fat_g || 0), 0),
+        saturated_fat_g: summaryNutrition.reduce((total, row) => total + (row.saturated_fat_g || 0), 0),
+        protein_g: summaryNutrition.reduce((total, row) => total + (row.protein_g || 0), 0),
+        sodium_mg: summaryNutrition.reduce((total, row) => total + (row.sodium_mg || 0), 0),
+        water_g: summaryNutrition.reduce((total, row) => total + (row.water_g || 0), 0),
+        completed: null,
+        row_hash: null,
+        source_file: null,
+        imported_at: null,
+        carb_calories: summaryNutrition.reduce((total, row) => total + row.carb_calories, 0),
+        fat_calories: summaryNutrition.reduce((total, row) => total + row.fat_calories, 0),
+        protein_calories: summaryNutrition.reduce((total, row) => total + row.protein_calories, 0),
+        macro_calories: summaryNutrition.reduce((total, row) => total + row.macro_calories, 0),
+        carb_calorie_pct: null,
+        fat_calorie_pct: null,
+        protein_calorie_pct: null
+      }
+    : undefined;
+  const selectedDayEvents = data?.tidepool.daily_events.filter((row) => row.day === day) || [];
   const mealRows = data?.meal_analysis.periods[periodLabel] || [];
   const selectedDayMeals = data?.meal_analysis.events.filter((row) => row.date === day) || [];
   const selectedDayMealRows = summarizeMealEvents(selectedDayMeals);
@@ -1542,30 +2063,142 @@ export default function App() {
   const dayAreaOver180 = averageNumeric(selectedDayMeals, (row) => row.area_over_180_4h);
   const dayRecovery = averageNumeric(selectedDayMeals, (row) => row.recovery_minutes_4h);
   const dayLowAfterCorrection = selectedDayMeals.filter((row) => row.low_after_correction).length;
-  const journalPeriod = period;
+  const journalRangeLabel = formatDateRange(summaryStart, summaryEnd);
   const journalRows = useMemo(() => {
     if (!data) return [];
     const rows = [...data.log.daily].sort((a, b) => b.date.localeCompare(a.date));
-    if (!journalPeriod) return rows.slice(0, 200);
-    return rows.filter((row) => row.date >= journalPeriod.start && row.date <= journalPeriod.end);
-  }, [data, journalPeriod]);
+    if (!summaryStart || !summaryEnd) return rows.slice(0, 200);
+    return rows.filter((row) => row.date >= summaryStart && row.date <= summaryEnd);
+  }, [data, summaryEnd, summaryStart]);
+  const foodLogRows = useMemo(() => {
+    if (!data) return [];
+    const rows = [...data.cronometer.groups].sort((a, b) => b.date.localeCompare(a.date) || b.group.localeCompare(a.group));
+    if (!summaryStart || !summaryEnd) return rows.slice(0, 200);
+    return rows.filter((row) => row.date >= summaryStart && row.date <= summaryEnd);
+  }, [data, summaryEnd, summaryStart]);
   const journalStats = useMemo(() => journalAverages(journalRows), [journalRows]);
   const previousJournalRows = useMemo(() => {
-    if (!data || !journalPeriod) return [];
+    if (!data || !summaryStart) return [];
     const sortedAsc = [...data.log.daily].sort((a, b) => a.date.localeCompare(b.date));
-    const startIndex = sortedAsc.findIndex((row) => row.date >= journalPeriod.start);
+    const startIndex = sortedAsc.findIndex((row) => row.date >= summaryStart);
     if (startIndex <= 0) return [];
     return sortedAsc.slice(Math.max(0, startIndex - journalStats.days), startIndex);
-  }, [data, journalPeriod, journalStats.days]);
+  }, [data, journalStats.days, summaryStart]);
   const previousJournalStats = useMemo(() => journalAverages(previousJournalRows), [previousJournalRows]);
+  const reportTitle =
+    activeTab === "today"
+      ? `Daily Dashboard - ${formatLongDate(day)}`
+      : activeTab === "summary"
+        ? `${summaryRangeLabel} Signal Summary`
+        : activeTab === "journal"
+          ? "Journal Review"
+          : `${activeTab[0].toUpperCase()}${activeTab.slice(1)}`;
+  const reportSubtitle =
+    activeTab === "today"
+      ? `${day} · Tidepool pump, CGM, meals, and event markers`
+      : activeTab === "summary"
+        ? `${formatDateRange(summaryStart, summaryEnd)} · ${summaryDays.length} days available`
+        : activeTab === "journal"
+          ? `${journalRangeLabel || "Latest journal days"} · ${journalStats.days} days`
+          : `${data?.tidepool.daily_ranges.length || 0} days · local data`;
+
+  function reportFilename() {
+    const scope =
+      activeTab === "today"
+        ? day
+        : summaryStart && summaryEnd
+          ? `${summaryStart}-to-${summaryEnd}`
+          : "current";
+    return `signalwell-${activeTab}-${scope}.pdf`;
+  }
+
+  function exportActiveTabPdf() {
+    const dashboard = data;
+    if (!dashboard) return;
+
+    if (activeTab === "today") {
+      generateReportPdf({
+        tab: "today",
+        title: reportTitle,
+        subtitle: reportSubtitle,
+        filename: reportFilename(),
+        today: {
+          range: selectedDayRange,
+          insulin: selectedDayInsulin,
+          food: selectedDayFood,
+          basal: selectedDayBasal,
+          glucose: dashboard.tidepool.glucose_points.filter((row) => row.day === day),
+          meals: selectedDayMeals,
+          mealRows: selectedDayMealRows,
+          events: selectedDayEvents
+        }
+      });
+      return;
+    }
+    if (activeTab === "summary") {
+      generateReportPdf({
+        tab: "summary",
+        title: reportTitle,
+        subtitle: reportSubtitle,
+        filename: reportFilename(),
+        summary: {
+          days: summaryDays,
+          ranges: summaryDailyRanges,
+          basal: summaryDailyBasal,
+          basalHourly: dashboard.tidepool.basal_deviation.hourly,
+          insulin: summaryDailyInsulin,
+          food: summaryDailyFood,
+          mealRows: summaryMealRows,
+          mealEvents: summaryMealEvents,
+          metrics: [
+            ["Avg CGM", `${format(summaryAvgGlucose, 0)} mg/dL`, "Daily average glucose", "#2f80ed"],
+            ["Time In Range", `${format(summaryTimeInRange, 0)}%`, "70-180 mg/dL", "#14905d"],
+            ["Extra Basal", `${format(summaryExtraBasal, 1)}U`, "Above programmed basal", "#7c5ce7"],
+            ["Correction Load", `${format(summaryCorrectionLoad, 0)}%`, "Extra basal / total insulin", "#7c5ce7"],
+            ["Bolus/g", format(summaryBolusPerCarb, 3), "Observed bolus density", "#1f4f8f"],
+            ["Meal Burden", format(periodMealBurden, 1), "Post-meal cleanup score", "#f59e0b"],
+            ["Avg Recovery", minutesLabel(periodRecovery), "After crossing >180", "#f59e0b"],
+            ["Area >180", format(periodAreaOver180, 1), "Above-range exposure", "#d64f4f"]
+          ]
+        }
+      });
+      return;
+    }
+    if (activeTab === "journal") {
+      generateReportPdf({
+        tab: "journal",
+        title: reportTitle,
+        subtitle: reportSubtitle,
+        filename: reportFilename(),
+        journal: {
+          rows: journalRows,
+          stats: journalStats,
+          previousStats: previousJournalStats,
+          baseline: dashboard.log.baseline
+        }
+      });
+    }
+  }
 
   async function onImport(file: File | null) {
     if (!file) return;
-    setStatus("Uploading export...");
+    setStatus("Uploading Tidepool export...");
     try {
       const job = await startTidepoolImport(file);
       setImportJob(job);
       setStatus(`Started import for ${file.name}`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function onCronometerImport(file: File | null) {
+    if (!file) return;
+    setStatus("Uploading Cronometer CSV...");
+    try {
+      const job = await startCronometerImport(file);
+      setImportJob(job);
+      setStatus(`Started Cronometer import for ${file.name}`);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     }
@@ -1616,7 +2249,7 @@ export default function App() {
                 onChange={(event) => {
                   const nextLabel = event.target.value;
                   setPeriodLabel(nextLabel);
-                  if (activeTab === "summary") {
+                  if (activeTab === "summary" || activeTab === "journal") {
                     const selected = data.period_summaries.find((item) => item.label === nextLabel);
                     if (selected) {
                       setSummaryStart(selected.start);
@@ -1628,7 +2261,7 @@ export default function App() {
                 {data.period_summaries.map((item) => <option key={item.label}>{item.label}</option>)}
               </select>
             )}
-            {activeTab === "summary" && (
+            {(activeTab === "summary" || activeTab === "journal") && (
               <div className="range-picker">
                 <label>
                   <span>Start</span>
@@ -1660,8 +2293,21 @@ export default function App() {
                 </label>
               </div>
             )}
+            {(activeTab === "today" || activeTab === "summary" || activeTab === "journal") && (
+              <button type="button" className="ghost-button export-button" onClick={exportActiveTabPdf}>
+                Download PDF
+              </button>
+            )}
           </div>
         </header>
+
+        {(activeTab === "today" || activeTab === "summary" || activeTab === "journal") && (
+          <section className="print-report-header" aria-hidden="true">
+            <h1>{reportTitle}</h1>
+            <p>{reportSubtitle}</p>
+            <small>Generated from local SignalWell data on {new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}</small>
+          </section>
+        )}
 
         {status && <div className="status">{status}</div>}
         {activeTab !== "imports" && <ImportWorkflow job={importJob} />}
@@ -1672,8 +2318,8 @@ export default function App() {
               <article className="panel full chart-panel">
                 <div className="section-heading">
                   <div>
-                    <h2>Selected Day Glucose Stability</h2>
-                    <p>{day} · carb markers use Tidepool meal entries</p>
+                    <h2>Glucose trend for {formatLongDate(day)}</h2>
+                    <p>{day} · carb, exercise, and note markers use Tidepool entries</p>
                   </div>
                   <div className="legend-row">
                     <span className="legend-dot green">In Range</span>
@@ -1681,7 +2327,7 @@ export default function App() {
                     <span className="legend-dot red">Low</span>
                   </div>
                 </div>
-                <EChart option={dayGlucoseOption(data, day, selectedDayMeals)} height={340} />
+                <EChart option={dayGlucoseOption(data, day, selectedDayMeals, selectedDayEvents)} height={340} />
               </article>
 
               <article className="panel full chart-panel">
@@ -1713,6 +2359,19 @@ export default function App() {
                 <MealRecoveryTable rows={selectedDayMealRows} />
               </article>
 
+              <MacroCaloriesPanel
+                title="Daily Macro Calories"
+                subtitle={
+                  selectedDayNutrition
+                    ? `${formatLongDate(day)} · Cronometer total row with meal-group detail`
+                    : "Import Cronometer nutrition to show macro calorie distribution for this day."
+                }
+                row={selectedDayNutrition}
+                groupRows={selectedDayNutritionGroups}
+                emptyMessage={`No Cronometer total row is available for ${day}.`}
+                mode="day"
+              />
+
               <article className="panel full">
                 <div className="section-heading">
                   <div>
@@ -1733,6 +2392,7 @@ export default function App() {
               periodRanges={dailyRanges}
               periodBasal={dailyBasal}
               periodInsulin={dailyInsulin}
+              periodFood={dailyFood}
               periodRecovery={recoveryByDay}
             />
           </section>
@@ -1772,6 +2432,19 @@ export default function App() {
               <SummaryMetricCard label="Area >180" value={format(periodAreaOver180, 1)} context="above-range exposure" values={summaryMealRows.map((row) => row.area_over_180_4h)} current={periodAreaOver180} previous={previousAreaOver180} color="#d64f4f" deltaDigits={1} />
               <SummaryMetricCard label="Low Risk" value={`${format(periodLowRisk, 0)}%`} context="low after high correction" values={summaryMealRows.map((row) => row.low_after_correction_pct)} current={periodLowRisk} previous={previousLowRisk} color="#d64f4f" deltaSuffix="%" />
             </section>
+
+            <MacroCaloriesPanel
+              title="Daily Macro Calories"
+              subtitle={
+                summaryNutrition.length
+                  ? `${summaryNutrition.length} Cronometer days · selected-range total and daily macro trend`
+                  : "Import Cronometer nutrition to track calorie and macro distribution across the selected range."
+              }
+              row={summaryNutritionTotal}
+              trendRows={summaryNutrition}
+              emptyMessage="No Cronometer totals are available for this summary range."
+              mode="summary"
+            />
 
             <article className="panel full chart-panel">
               <div className="section-heading">
@@ -1834,8 +2507,8 @@ export default function App() {
               <div>
                 <h2>Journal Review</h2>
                 <p>
-                  {journalPeriod
-                    ? `${journalPeriod.start} to ${journalPeriod.end} · ${journalStats.days} days`
+                  {summaryStart && summaryEnd
+                    ? `${summaryStart} to ${summaryEnd} · ${journalStats.days} days`
                     : `Latest ${journalStats.days} journal days`}
                 </p>
               </div>
@@ -1872,13 +2545,27 @@ export default function App() {
                 <div>
                   <h2>Journal Summary</h2>
                   <p>
-                    {journalPeriod
-                      ? `${journalPeriod.start} to ${journalPeriod.end}`
+                    {summaryStart && summaryEnd
+                      ? `${summaryStart} to ${summaryEnd}`
                       : "Latest 200 days from the CSV journal"}
                   </p>
                 </div>
               </div>
               <JournalTable rows={journalRows} />
+            </article>
+
+            <article className="panel full">
+              <div className="section-heading">
+                <div>
+                  <h2>Food Log</h2>
+                  <p>
+                    {foodLogRows.length
+                      ? `${foodLogRows.length} Cronometer meal-group rows · ${summaryStart && summaryEnd ? `${summaryStart} to ${summaryEnd}` : "latest imported rows"}`
+                      : "No Cronometer food log rows in this Journal range."}
+                  </p>
+                </div>
+              </div>
+              {foodLogRows.length ? <CronometerTable rows={foodLogRows} /> : <p>Import a Cronometer CSV to review food log rows here.</p>}
             </article>
           </section>
         )}
@@ -1887,8 +2574,8 @@ export default function App() {
           <section className="grid">
             <article className="panel full import-dropzone">
               <div>
-                <h2>Import Data</h2>
-                <p>Load a Tidepool JSON export. The workflow shows each import step and keeps existing records de-duplicated.</p>
+                <h2>Import Tidepool</h2>
+                <p>Load a Tidepool JSON export. Records are appended into SQLite with duplicate detection before dashboard data is rebuilt.</p>
               </div>
               <label className="import-button primary">
                 Import Tidepool JSON
@@ -1897,6 +2584,23 @@ export default function App() {
                   accept=".json,application/json"
                   onChange={(event) => {
                     onImport(event.target.files?.[0] || null);
+                    event.currentTarget.value = "";
+                  }}
+                />
+              </label>
+            </article>
+            <article className="panel full import-dropzone">
+              <div>
+                <h2>Import Cronometer</h2>
+                <p>Load a Cronometer nutrition CSV. Rows are normalized by date, group, and nutrition values; exact duplicates are skipped.</p>
+              </div>
+              <label className="import-button primary nutrition">
+                Import Cronometer CSV
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  onChange={(event) => {
+                    onCronometerImport(event.target.files?.[0] || null);
                     event.currentTarget.value = "";
                   }}
                 />
