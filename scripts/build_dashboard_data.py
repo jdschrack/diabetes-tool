@@ -95,6 +95,93 @@ def query_all(conn: sqlite3.Connection, sql: str) -> list[dict[str, Any]]:
     return [dict(row) for row in conn.execute(sql).fetchall()]
 
 
+def table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    return (
+        conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table_name,)).fetchone()
+        is not None
+    )
+
+
+def macro_calories(row: dict[str, Any]) -> dict[str, Any]:
+    carb_calories = (row.get("carbs_g") or 0) * 4.0
+    fat_calories = (row.get("fat_g") or 0) * 9.0
+    protein_calories = (row.get("protein_g") or 0) * 4.0
+    macro_total = carb_calories + fat_calories + protein_calories
+    total = row.get("energy_kcal") or macro_total or None
+    enriched = dict(row)
+    enriched.update(
+        {
+            "carb_calories": round(carb_calories, 1),
+            "fat_calories": round(fat_calories, 1),
+            "protein_calories": round(protein_calories, 1),
+            "macro_calories": round(macro_total, 1),
+            "carb_calorie_pct": round(100.0 * carb_calories / total, 1) if total else None,
+            "fat_calorie_pct": round(100.0 * fat_calories / total, 1) if total else None,
+            "protein_calorie_pct": round(100.0 * protein_calories / total, 1) if total else None,
+        }
+    )
+    return enriched
+
+
+def build_cronometer_data(conn: sqlite3.Connection) -> dict[str, Any]:
+    if not table_exists(conn, "cronometer_nutrition"):
+        return {"daily": [], "groups": [], "totals": {"rows": 0, "days": 0, "latest_day": None}}
+
+    rows = query_all(
+        conn,
+        """
+        WITH ranked AS (
+            SELECT
+                *,
+                ROW_NUMBER() OVER (
+                    PARTITION BY date, meal_group
+                    ORDER BY imported_at DESC, row_hash DESC
+                ) AS row_rank
+            FROM cronometer_nutrition
+        )
+        SELECT
+            row_hash,
+            source_file,
+            imported_at,
+            date,
+            meal_group AS "group",
+            energy_kcal,
+            net_carbs_g,
+            carbs_g,
+            fiber_g,
+            sugars_g,
+            added_sugars_g,
+            fat_g,
+            saturated_fat_g,
+            protein_g,
+            sodium_mg,
+            water_g,
+            completed
+        FROM ranked
+        WHERE row_rank = 1
+        ORDER BY date, meal_group
+        """,
+    )
+    for row in rows:
+        if row.get("completed") is not None:
+            row["completed"] = bool(row["completed"])
+
+    daily = [macro_calories(row) for row in rows if row["group"] == "Total"]
+    groups = [macro_calories(row) for row in rows if row["group"] != "Total"]
+    raw_total = query_all(
+        conn,
+        """
+        SELECT COUNT(*) AS rows, COUNT(DISTINCT date) AS days, MAX(date) AS latest_day
+        FROM cronometer_nutrition
+        """,
+    )[0]
+    return {
+        "daily": daily,
+        "groups": groups,
+        "totals": raw_total,
+    }
+
+
 def parse_dt(value: str) -> datetime:
     return datetime.fromisoformat(value)
 
@@ -460,6 +547,24 @@ def crossed_high(glucose_rows: list[dict[str, Any]]) -> bool:
     return any(row["value"] > 180 for row in glucose_rows)
 
 
+def longest_minutes_over_threshold(glucose_rows: list[dict[str, Any]], threshold: float, max_gap_minutes: float = 15.0) -> float:
+    longest = 0.0
+    run_start: datetime | None = None
+    previous_time: datetime | None = None
+    for row in glucose_rows:
+        current_time = parse_dt(row["local_time"])
+        if row["value"] > threshold:
+            if run_start is None or previous_time is None or (current_time - previous_time).total_seconds() / 60.0 > max_gap_minutes:
+                run_start = current_time
+            if run_start is not None:
+                longest = max(longest, (current_time - run_start).total_seconds() / 60.0)
+            previous_time = current_time
+            continue
+        run_start = None
+        previous_time = None
+    return longest
+
+
 def low_after_high(glucose_rows: list[dict[str, Any]]) -> bool | None:
     if not glucose_rows:
         return None
@@ -571,18 +676,29 @@ def build_meal_analysis(conn: sqlite3.Connection, tidepool: dict[str, Any], peri
         net_basal_4h = overlap_units(hourly, start, end, "net_deviation_units")
         area_4h = area_over_threshold(glucose_rows)
         recovery_4h = recovery_minutes(glucose_rows, start)
+        bolus_units = sum(row["bolus_units"] or 0.0 for _index, row in bolus_rows)
+        announced_ratio = cluster["carbs"] / bolus_units if bolus_units > 0 else None
+        minutes_over_250 = longest_minutes_over_threshold(glucose_rows, 250.0)
+        sustained_over_250 = minutes_over_250 >= 120.0
+        cleanup_units = extra_basal_4h if sustained_over_250 and extra_basal_4h > 0 else 0.0
+        review_ratio = cluster["carbs"] / (bolus_units + cleanup_units) if sustained_over_250 and bolus_units + cleanup_units > 0 else None
+        carb_gap = cleanup_units * announced_ratio if sustained_over_250 and announced_ratio is not None else None
         meals.append(
             {
                 "date": start.date().isoformat(),
                 "start": cluster["start"],
                 "meal": cluster["meal"],
                 "carbs": cluster["carbs"],
-                "bolus": sum(row["bolus_units"] or 0.0 for _index, row in bolus_rows),
+                "bolus": bolus_units,
                 "pre_bg": average([row["value"] for row in pre_rows]),
                 "peak_4h": max((row["value"] for row in glucose_rows), default=None),
                 "pct_high_4h": 100.0 * sum(1 for row in glucose_rows if row["value"] > 180) / len(glucose_rows)
                 if glucose_rows
                 else None,
+                "minutes_over_250_4h": minutes_over_250,
+                "sustained_over_250_2h": sustained_over_250,
+                "review_carbs_per_unit": review_ratio,
+                "estimated_missing_carbs": carb_gap,
                 "recovery_minutes_4h": recovery_4h,
                 "area_over_180_4h": area_4h,
                 "crossed_high_4h": crossed_high(glucose_rows),
@@ -603,6 +719,78 @@ def build_meal_analysis(conn: sqlite3.Connection, tidepool: dict[str, Any], peri
         },
         "events": meals,
     }
+
+
+def event_text(raw: dict[str, Any]) -> str | None:
+    for key in ("note", "notes", "message", "text", "description", "name"):
+        value = raw.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def build_daily_events(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = query_all(
+        conn,
+        """
+        SELECT id, type, subtype, local_time, duration, name, raw_json
+        FROM events
+        WHERE local_time IS NOT NULL
+          AND (
+            type = 'deviceEvent'
+            OR lower(type) LIKE '%note%'
+            OR lower(COALESCE(subtype, '')) LIKE '%note%'
+            OR lower(COALESCE(name, '')) LIKE '%note%'
+          )
+        ORDER BY local_time
+        """,
+    )
+    events: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        raw = json.loads(row.get("raw_json") or "{}")
+        kind: str | None = None
+        label: str | None = None
+        detail: str | None = None
+        duration = row.get("duration")
+
+        if row.get("type") == "deviceEvent" and row.get("subtype") == "pumpSettingsOverride":
+            high_target = raw.get("bgTarget.high")
+            low_target = raw.get("bgTarget.low")
+            # Twiist exports elevated exercise targets as mmol/L values even when event units say mg/dL.
+            if isinstance(high_target, (int, float)) and isinstance(low_target, (int, float)) and high_target >= 9:
+                kind = "exercise"
+                label = "Exercise"
+                detail = f"Pump override · {int(round(duration))}m" if isinstance(duration, (int, float)) else "Pump override"
+        elif (
+            "note" in str(row.get("type", "")).lower()
+            or "note" in str(row.get("subtype", "")).lower()
+            or "note" in str(row.get("name", "")).lower()
+        ):
+            text = event_text(raw) or row.get("name")
+            if text:
+                kind = "note"
+                label = "Note"
+                detail = text
+
+        if not kind or not label:
+            continue
+        event_id = row.get("id") or f"{row['local_time']}-{kind}"
+        if event_id in seen:
+            continue
+        seen.add(event_id)
+        events.append(
+            {
+                "id": event_id,
+                "day": row["local_time"][:10],
+                "local_time": row["local_time"],
+                "kind": kind,
+                "label": label,
+                "detail": detail,
+                "duration_minutes": round(duration, 1) if isinstance(duration, (int, float)) else None,
+            }
+        )
+    return events
 
 
 def build_tidepool_data(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -690,6 +878,7 @@ def build_tidepool_data(conn: sqlite3.Connection) -> dict[str, Any]:
         "daily_insulin": daily_insulin,
         "daily_food": food,
         "glucose_points": glucose_points,
+        "daily_events": build_daily_events(conn),
         "basal_deviation": basal_deviation,
         "totals": totals,
     }
@@ -700,15 +889,18 @@ def main() -> None:
     conn = sqlite3.connect(args.db)
     try:
         log_data = parse_log(args.log)
+        cronometer_data = build_cronometer_data(conn)
         tidepool_data = build_tidepool_data(conn)
         period_summaries = build_period_summaries(tidepool_data, log_data)
         payload = {
             "generated_from": {
                 "db": str(args.db),
                 "log": str(args.log),
+                "cronometer": str(args.db),
             },
             "tidepool": tidepool_data,
             "log": log_data,
+            "cronometer": cronometer_data,
             "period_summaries": period_summaries,
             "meal_analysis": build_meal_analysis(conn, tidepool_data, period_summaries),
         }

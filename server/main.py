@@ -77,18 +77,20 @@ def read_dashboard_payload() -> dict[str, Any]:
     return json.loads(text.removeprefix(prefix).rstrip(";\n"))
 
 
-def create_import_job(filename: str) -> dict[str, Any]:
+def create_import_job(filename: str, source: str = "tidepool") -> dict[str, Any]:
     job_id = str(uuid.uuid4())
+    import_label = "Import Tidepool records" if source == "tidepool" else "Import Cronometer nutrition"
     job = {
         "id": job_id,
         "filename": filename,
+        "source": source,
         "status": "queued",
         "created_at": utc_now(),
         "updated_at": utc_now(),
         "message": "Import queued",
         "steps": [
             {"key": "upload", "label": "Save uploaded export", "status": "completed", "message": "Upload saved"},
-            {"key": "import", "label": "Import Tidepool records", "status": "pending", "message": ""},
+            {"key": "import", "label": import_label, "status": "pending", "message": ""},
             {"key": "build", "label": "Rebuild dashboard data", "status": "pending", "message": ""},
             {"key": "reload", "label": "Reload dashboard", "status": "pending", "message": ""},
         ],
@@ -177,6 +179,64 @@ def run_import_job(job_id: str, destination: Path) -> None:
     )
 
 
+def parse_json_stdout(result: subprocess.CompletedProcess[str]) -> dict[str, Any]:
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return {}
+
+
+def run_cronometer_import_job(job_id: str, destination: Path) -> None:
+    update_import_job(job_id, status="running", message="Importing Cronometer nutrition")
+    update_import_step(job_id, "import", "running", "Checking duplicates and storing nutrition rows")
+    import_result = run_script(["scripts/import_cronometer.py", str(destination)])
+    if import_result.returncode:
+        fail_import_job(job_id, "import", import_result)
+        return
+    import_summary = parse_json_stdout(import_result)
+    update_import_step(
+        job_id,
+        "import",
+        "completed",
+        f"{import_summary.get('imported', 0)} imported · {import_summary.get('duplicates', 0)} duplicates skipped",
+    )
+
+    update_import_job(job_id, message="Rebuilding dashboard data")
+    update_import_step(job_id, "build", "running", "Running dashboard data builder")
+    build_result = run_script(["scripts/build_dashboard_data.py"])
+    if build_result.returncode:
+        fail_import_job(job_id, "build", build_result)
+        return
+    update_import_step(job_id, "build", "completed", "Dashboard data rebuilt")
+
+    update_import_job(job_id, message="Reloading dashboard payload")
+    update_import_step(job_id, "reload", "running", "Reading generated dashboard data")
+    try:
+        payload = read_dashboard_payload()
+    except Exception as exc:  # noqa: BLE001 - capture job failure for display.
+        update_import_step(job_id, "reload", "failed", str(exc))
+        update_import_job(job_id, status="failed", message="Dashboard reload failed", stderr=str(exc))
+        return
+
+    cronometer = payload.get("cronometer", {}).get("totals", {})
+    update_import_step(job_id, "reload", "completed", "Dashboard payload ready")
+    update_import_job(
+        job_id,
+        status="completed",
+        message="Cronometer import completed",
+        stdout=import_result.stdout[-8000:],
+        stderr=import_result.stderr[-8000:],
+        summary={
+            "days": cronometer.get("days", import_summary.get("days", 0)),
+            "readings": cronometer.get("rows", import_summary.get("total_rows", 0)),
+            "latest_day": cronometer.get("latest_day", import_summary.get("latest_day")),
+            "imported": import_summary.get("imported", 0),
+            "duplicates": import_summary.get("duplicates", 0),
+            "total_rows": import_summary.get("total_rows", cronometer.get("rows", 0)),
+        },
+    )
+
+
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     return {"ok": True, "database": DB_PATH.exists()}
@@ -197,8 +257,23 @@ async def import_tidepool(background_tasks: BackgroundTasks, file: UploadFile = 
     with destination.open("wb") as out:
         shutil.copyfileobj(file.file, out)
 
-    job = create_import_job(destination.name)
+    job = create_import_job(destination.name, "tidepool")
     background_tasks.add_task(run_import_job, job["id"], destination)
+    return {"job": get_import_job(job["id"])}
+
+
+@app.post("/api/import/cronometer")
+async def import_cronometer(background_tasks: BackgroundTasks, file: UploadFile = File(...)) -> dict[str, Any]:
+    if not file.filename or not file.filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Upload a Cronometer CSV export")
+
+    IMPORT_DIR.mkdir(parents=True, exist_ok=True)
+    destination = IMPORT_DIR / Path(file.filename).name
+    with destination.open("wb") as out:
+        shutil.copyfileobj(file.file, out)
+
+    job = create_import_job(destination.name, "cronometer")
+    background_tasks.add_task(run_cronometer_import_job, job["id"], destination)
     return {"job": get_import_job(job["id"])}
 
 

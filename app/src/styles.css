@@ -211,10 +211,19 @@ input[type="date"]:focus-visible,
   font-weight: 650;
 }
 
+.export-button {
+  min-width: 104px;
+}
+
 .import-button.primary {
   border-color: var(--deep-blue);
   background: var(--deep-blue);
   color: #fff;
+}
+
+.import-button.primary.nutrition {
+  border-color: #b7791f;
+  background: #b7791f;
 }
 
 .import-button input {
@@ -292,6 +301,10 @@ input[type="date"]:focus-visible,
   background: var(--panel);
   color: var(--muted);
   box-shadow: var(--shadow);
+}
+
+.print-report-header {
+  display: none;
 }
 
 .grid {
@@ -1187,6 +1200,274 @@ tbody tr:hover {
   gap: 18px;
 }
 
+.nutrition-chart-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.85fr) minmax(0, 1.15fr);
+  gap: 18px;
+  align-items: center;
+}
+
+.macro-panel {
+  padding-bottom: 18px;
+}
+
+.macro-heading {
+  margin-bottom: 14px;
+}
+
+.macro-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.92fr) minmax(0, 1.45fr);
+  gap: 18px;
+  align-items: stretch;
+}
+
+.macro-hero {
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--soft);
+  border-radius: 13px;
+  background:
+    linear-gradient(180deg, rgba(47, 128, 237, 0.055), transparent 42%),
+    #fff;
+}
+
+.macro-donut {
+  min-height: 260px;
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at center, rgba(255, 255, 255, 0.94) 0 39%, transparent 40%),
+    linear-gradient(180deg, #fbfcfd, #fff);
+}
+
+.macro-total {
+  padding-top: 2px;
+}
+
+.macro-total span,
+.macro-total p,
+.macro-kpis span,
+.macro-subheading span,
+.macro-row p {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.macro-total span {
+  display: block;
+  font-weight: 700;
+}
+
+.macro-total strong {
+  display: block;
+  margin: 5px 0 4px;
+  color: var(--ink);
+  font-size: 34px;
+  line-height: 1;
+}
+
+.macro-total small {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.macro-kpis {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  align-self: end;
+}
+
+.macro-kpis span {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid #edf1f6;
+  border-radius: 10px;
+  background: #fbfcfd;
+}
+
+.macro-kpis strong {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1.1;
+}
+
+.macro-support {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.74fr) minmax(0, 1.26fr);
+  gap: 16px;
+  min-width: 0;
+}
+
+.macro-day-detail {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: 16px;
+  min-width: 0;
+}
+
+.macro-breakdown,
+.macro-food-log,
+.macro-trend {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--soft);
+  border-radius: 13px;
+  background: #fff;
+}
+
+.macro-breakdown {
+  display: grid;
+  align-content: start;
+  gap: 13px;
+}
+
+.macro-day-detail .macro-breakdown {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.macro-row {
+  display: grid;
+  gap: 7px;
+}
+
+.macro-row-head,
+.macro-subheading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.macro-row-head span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.macro-row-head i {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+}
+
+.macro-row-head strong {
+  color: var(--ink);
+  font-size: 15px;
+}
+
+.macro-bar {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #edf1f6;
+}
+
+.macro-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+}
+
+.macro-subheading {
+  margin-bottom: 10px;
+}
+
+.macro-subheading strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.macro-trend .echart {
+  margin: 0 -4px;
+}
+
+.food-log-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.food-log-card {
+  min-width: 0;
+  padding: 13px;
+  border: 1px solid color-mix(in srgb, var(--meal-color) 22%, var(--line));
+  border-radius: 12px;
+  background: linear-gradient(180deg, var(--meal-soft), #fffdf9 45%);
+}
+
+.food-log-card header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.food-log-card h3 {
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.2;
+}
+
+.food-log-card small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.food-log-card dl {
+  display: grid;
+  margin: 0;
+}
+
+.food-log-card dl div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 10px;
+  align-items: center;
+  padding: 9px 0;
+  border-top: 1px solid rgba(223, 230, 239, 0.78);
+}
+
+.food-log-card dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.food-log-card dd {
+  margin: 0;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 750;
+  text-align: right;
+}
+
+.food-macro-bar {
+  grid-column: 1 / -1;
+  display: flex;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #edf1f6;
+}
+
+.food-macro-bar i {
+  display: block;
+  height: 100%;
+}
+
 .loading {
   padding: 32px;
 }
@@ -1211,6 +1492,22 @@ tbody tr:hover {
   .journal-metric-grid,
   .baseline-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .macro-layout,
+  .macro-support,
+  .macro-day-detail .macro-breakdown {
+    grid-template-columns: 1fr;
+  }
+
+  .macro-hero {
+    grid-template-columns: minmax(240px, 0.85fr) minmax(0, 1fr);
+    grid-template-rows: auto 1fr;
+    align-items: center;
+  }
+
+  .macro-donut {
+    grid-row: 1 / span 2;
   }
 }
 
@@ -1253,6 +1550,7 @@ tbody tr:hover {
   .recovery-table,
   .summary-chart-grid,
   .summary-metric-grid,
+  .nutrition-chart-grid,
   .journal-metric-grid,
   .baseline-grid,
   .pattern-board {
@@ -1268,5 +1566,141 @@ tbody tr:hover {
   .summary-hero-stat,
   .journal-hero-stat {
     text-align: left;
+  }
+
+  .macro-hero {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto;
+  }
+
+  .macro-donut {
+    grid-row: auto;
+  }
+
+  .macro-kpis {
+    grid-template-columns: 1fr;
+  }
+
+  .food-log-card-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media print {
+  @page {
+    size: letter;
+    margin: 0.45in;
+  }
+
+  :root {
+    --bg: #ffffff;
+    --panel: #ffffff;
+    --shadow: none;
+  }
+
+  * {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  body {
+    background: #ffffff;
+  }
+
+  .app-shell,
+  .app-main,
+  .today-layout,
+  .today-main,
+  .summary-page,
+  .journal-page {
+    display: block;
+  }
+
+  .app-main {
+    padding: 0;
+  }
+
+  .sidebar,
+  .topbar,
+  .status,
+  .import-workflow {
+    display: none !important;
+  }
+
+  .print-report-header {
+    display: block;
+    margin-bottom: 18px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid #dfe6ef;
+  }
+
+  .print-report-header h1 {
+    color: #121a2b;
+    font-size: 22px;
+    line-height: 1.2;
+  }
+
+  .print-report-header p {
+    margin-top: 5px;
+    color: #344054;
+    font-size: 12px;
+  }
+
+  .print-report-header small {
+    display: block;
+    margin-top: 4px;
+    color: #657186;
+    font-size: 10px;
+  }
+
+  .panel,
+  .summary-metric-card {
+    break-inside: avoid;
+    box-shadow: none;
+  }
+
+  .panel {
+    margin-bottom: 14px;
+    padding: 14px;
+    border-color: #dfe6ef;
+  }
+
+  .today-stack {
+    position: static;
+    margin-top: 14px;
+  }
+
+  .summary-metric-grid,
+  .journal-metric-grid,
+  .baseline-grid,
+  .pattern-board,
+  .recovery-metrics {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+
+  .summary-chart-grid,
+  .recovery-table {
+    display: block;
+  }
+
+  .table-scroll {
+    overflow: visible;
+  }
+
+  .table-scroll table {
+    min-width: 0;
+  }
+
+  table {
+    font-size: 10px;
+  }
+
+  th,
+  td {
+    padding: 6px;
+    white-space: normal;
   }
 }
