@@ -28,6 +28,7 @@ export type PdfReportPayload = {
     food: DashboardData["tidepool"]["daily_food"][number] | undefined;
     basal: DashboardData["tidepool"]["basal_deviation"]["daily"][number] | undefined;
     glucose: DashboardData["tidepool"]["glucose_points"];
+    smbg: DashboardData["tidepool"]["smbg_points"];
     meals: DashboardData["meal_analysis"]["events"];
     mealRows: MealSummary[];
     events: DashboardData["tidepool"]["daily_events"];
@@ -47,7 +48,6 @@ export type PdfReportPayload = {
     rows: DashboardData["log"]["daily"];
     stats: JournalStats;
     previousStats: JournalStats;
-    baseline: DashboardData["log"]["baseline"];
   };
 };
 
@@ -76,6 +76,12 @@ const mealMeta: Record<string, { label: string; window: string; color: string; s
 
 function fmt(value: number | null | undefined, digits = 1) {
   return value === null || value === undefined || Number.isNaN(value) ? "--" : value.toFixed(digits).replace(/\.0$/, "");
+}
+
+function minuteOfDay(isoLocal: string): number {
+  const hh = Number(isoLocal.slice(11, 13)) || 0;
+  const mm = Number(isoLocal.slice(14, 16)) || 0;
+  return hh * 60 + mm;
 }
 
 function minutes(value: number | null | undefined) {
@@ -171,20 +177,30 @@ function drawLineChart(
   w: number,
   h: number,
   points: Array<{ label: string; value: number | null | undefined }>,
-  options: { min?: number; max?: number; color?: string; thresholdLow?: number; thresholdHigh?: number } = {}
+  options: {
+    min?: number;
+    max?: number;
+    color?: string;
+    thresholdLow?: number;
+    thresholdHigh?: number;
+    dots?: Array<{ position: number; value: number }>;
+    dotColor?: string;
+  } = {}
 ) {
   const values = points.map((point) => point.value).filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  const dotValues = (options.dots || []).map((dot) => dot.value);
   doc.setFillColor("#ffffff");
   doc.setDrawColor(colors.line);
   doc.roundedRect(x, y, w, h, 6, 6, "FD");
-  if (values.length < 2) {
+  if (values.length < 2 && dotValues.length === 0) {
     doc.setTextColor(colors.muted);
     doc.setFontSize(9);
     doc.text("Not enough data", x + 12, y + h / 2);
     return;
   }
-  const min = options.min ?? Math.min(...values);
-  const max = options.max ?? Math.max(...values);
+  const allValues = values.concat(dotValues);
+  const min = options.min ?? Math.min(...allValues);
+  const max = options.max ?? Math.max(...allValues);
   const spread = max - min || 1;
   const chart = { x: x + 16, y: y + 12, w: w - 28, h: h - 28 };
   if (options.thresholdLow !== undefined && options.thresholdHigh !== undefined) {
@@ -215,6 +231,16 @@ function drawLineChart(
     const previous = coords[index - 1];
     doc.line(previous.x, previous.y, point.x, point.y);
   });
+  if (options.dots && options.dots.length) {
+    doc.setFillColor(options.dotColor || colors.red);
+    doc.setDrawColor("#ffffff");
+    doc.setLineWidth(0.6);
+    options.dots.forEach((dot) => {
+      const dotX = chart.x + Math.max(0, Math.min(1, dot.position)) * chart.w;
+      const dotY = chart.y + chart.h - ((dot.value - min) / spread) * chart.h;
+      doc.circle(dotX, dotY, 1.8, "FD");
+    });
+  }
   doc.setLineWidth(0.2);
   doc.setTextColor(colors.muted);
   doc.setFontSize(7);
@@ -417,10 +443,12 @@ function todayReport(doc: jsPDF, payload: PdfReportPayload) {
     ["Extra Basal", `${fmt(today.basal?.extra_basal_units, 2)}U`, "Above programmed basal", colors.violet],
     ["Events", `${today.events.length}`, "Exercise and notes", colors.green],
     ["Meals", `${today.meals.length}`, "Tidepool meal clusters", colors.amber],
-    ["Data Coverage", `${fmt(today.range ? Math.min(100, (today.range.readings / 288) * 100) : null, 0)}%`, `${today.range?.readings || 0} CGM readings`, colors.blue]
+    ["Data Coverage", `${fmt(today.range ? Math.min(100, (today.range.cgm_readings / 288) * 100) : null, 0)}%`, `${today.range?.cgm_readings || 0} CGM · ${today.range?.smbg_readings || 0} fingerstick`, colors.blue]
   ]);
   y += 4;
-  y = drawSectionTitle(doc, y, "Glucose Trend", "Selected-day CGM with in-range band.");
+  y = drawSectionTitle(doc, y, "Glucose Trend", "Selected-day CGM with fingerstick markers overlaid.");
+  const smbgValues = today.smbg.map((row) => row.value);
+  const glucoseMax = Math.max(260, ...today.glucose.map((row) => row.value), ...smbgValues);
   drawLineChart(
     doc,
     page.margin,
@@ -428,7 +456,15 @@ function todayReport(doc: jsPDF, payload: PdfReportPayload) {
     page.width - page.margin * 2,
     170,
     today.glucose.map((row) => ({ label: row.local_time.slice(11, 16), value: row.value })),
-    { min: 40, max: Math.max(260, ...today.glucose.map((row) => row.value)), thresholdLow: 70, thresholdHigh: 180, color: colors.green }
+    {
+      min: 40,
+      max: glucoseMax,
+      thresholdLow: 70,
+      thresholdHigh: 180,
+      color: colors.green,
+      dots: today.smbg.map((row) => ({ position: minuteOfDay(row.local_time) / 1440, value: row.value })),
+      dotColor: colors.red
+    }
   );
   y += 192;
   y = drawSectionTitle(doc, y, "Meal Impact Review", "Rows flagged when glucose remains above 250 mg/dL for at least two hours.");
@@ -629,15 +665,6 @@ function journalReport(doc: jsPDF, payload: PdfReportPayload) {
     { min: 0, color: colors.deepBlue }
   );
   y += 152;
-  y = drawSectionTitle(doc, y, "Baseline Comparison", "Selected Journal range compared with the saved iLet baseline rows.");
-  y = drawTable(
-    doc,
-    y,
-    ["Metric", "iLet baseline", "Twiist average", "Logged change"],
-    journal.baseline.map((row) => [row.metric, row.ilet_30_day, row.twiist_avg, row.change]),
-    [146, 118, 118, 122],
-    8
-  );
   if (y > 610) {
     y = addPage(doc, 2);
     y = drawHeader(doc, payload, y);

@@ -6,4 +6,3 @@ services:
     volumes:
       - ./analysis:/workspace/analysis
       - ./data:/workspace/data
-      - ./log.csv:/workspace/log.csv:ro

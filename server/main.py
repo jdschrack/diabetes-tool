@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -15,10 +16,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from server.dashboard import build_payload
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "analysis" / "tidepool.db"
-DASHBOARD_DATA_PATH = ROOT / "dashboard" / "dashboard-data.js"
 IMPORT_DIR = ROOT / "data" / "imports"
 STATIC_DIR = ROOT / "app" / "dist"
 IMPORT_JOBS: dict[str, dict[str, Any]] = {}
@@ -48,33 +50,13 @@ def run_script(args: list[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
-def run_script_or_raise(args: list[str]) -> None:
-    result = subprocess.run(
-        [sys.executable, *args],
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if result.returncode:
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "command": " ".join([sys.executable, *args]),
-                "stdout": result.stdout,
-                "stderr": result.stderr,
-            },
-        )
-
-
-def read_dashboard_payload() -> dict[str, Any]:
-    if not DASHBOARD_DATA_PATH.exists():
-        run_script_or_raise(["scripts/build_dashboard_data.py"])
-    text = DASHBOARD_DATA_PATH.read_text(encoding="utf-8")
-    prefix = "window.DASHBOARD_DATA = "
-    if not text.startswith(prefix):
-        raise HTTPException(status_code=500, detail="dashboard-data.js has unexpected format")
-    return json.loads(text.removeprefix(prefix).rstrip(";\n"))
+def load_dashboard_payload() -> dict[str, Any]:
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        return build_payload(conn)
+    finally:
+        conn.close()
 
 
 def create_import_job(filename: str, source: str = "tidepool") -> dict[str, Any]:
@@ -91,8 +73,7 @@ def create_import_job(filename: str, source: str = "tidepool") -> dict[str, Any]
         "steps": [
             {"key": "upload", "label": "Save uploaded export", "status": "completed", "message": "Upload saved"},
             {"key": "import", "label": import_label, "status": "pending", "message": ""},
-            {"key": "build", "label": "Rebuild dashboard data", "status": "pending", "message": ""},
-            {"key": "reload", "label": "Reload dashboard", "status": "pending", "message": ""},
+            {"key": "reload", "label": "Refresh dashboard", "status": "pending", "message": ""},
         ],
         "stdout": "",
         "stderr": "",
@@ -149,21 +130,13 @@ def run_import_job(job_id: str, destination: Path) -> None:
         return
     update_import_step(job_id, "import", "completed", "Tidepool records imported")
 
-    update_import_job(job_id, message="Rebuilding dashboard data")
-    update_import_step(job_id, "build", "running", "Running dashboard data builder")
-    result = run_script(["scripts/build_dashboard_data.py"])
-    if result.returncode:
-        fail_import_job(job_id, "build", result)
-        return
-    update_import_step(job_id, "build", "completed", "Dashboard data rebuilt")
-
-    update_import_job(job_id, message="Reloading dashboard payload")
-    update_import_step(job_id, "reload", "running", "Reading generated dashboard data")
+    update_import_job(job_id, message="Refreshing dashboard payload")
+    update_import_step(job_id, "reload", "running", "Computing dashboard data from SQLite")
     try:
-        payload = read_dashboard_payload()
+        payload = load_dashboard_payload()
     except Exception as exc:  # noqa: BLE001 - capture job failure for display.
         update_import_step(job_id, "reload", "failed", str(exc))
-        update_import_job(job_id, status="failed", message="Dashboard reload failed", stderr=str(exc))
+        update_import_job(job_id, status="failed", message="Dashboard refresh failed", stderr=str(exc))
         return
 
     update_import_step(job_id, "reload", "completed", "Dashboard payload ready")
@@ -171,6 +144,8 @@ def run_import_job(job_id: str, destination: Path) -> None:
         job_id,
         status="completed",
         message="Import completed",
+        stdout=result.stdout[-8000:],
+        stderr=result.stderr[-8000:],
         summary={
             "days": len(payload["tidepool"]["daily_ranges"]),
             "readings": payload["tidepool"]["totals"]["readings"],
@@ -201,21 +176,13 @@ def run_cronometer_import_job(job_id: str, destination: Path) -> None:
         f"{import_summary.get('imported', 0)} imported · {import_summary.get('duplicates', 0)} duplicates skipped",
     )
 
-    update_import_job(job_id, message="Rebuilding dashboard data")
-    update_import_step(job_id, "build", "running", "Running dashboard data builder")
-    build_result = run_script(["scripts/build_dashboard_data.py"])
-    if build_result.returncode:
-        fail_import_job(job_id, "build", build_result)
-        return
-    update_import_step(job_id, "build", "completed", "Dashboard data rebuilt")
-
-    update_import_job(job_id, message="Reloading dashboard payload")
-    update_import_step(job_id, "reload", "running", "Reading generated dashboard data")
+    update_import_job(job_id, message="Refreshing dashboard payload")
+    update_import_step(job_id, "reload", "running", "Computing dashboard data from SQLite")
     try:
-        payload = read_dashboard_payload()
+        payload = load_dashboard_payload()
     except Exception as exc:  # noqa: BLE001 - capture job failure for display.
         update_import_step(job_id, "reload", "failed", str(exc))
-        update_import_job(job_id, status="failed", message="Dashboard reload failed", stderr=str(exc))
+        update_import_job(job_id, status="failed", message="Dashboard refresh failed", stderr=str(exc))
         return
 
     cronometer = payload.get("cronometer", {}).get("totals", {})
@@ -244,7 +211,7 @@ def health() -> dict[str, Any]:
 
 @app.get("/api/dashboard")
 def dashboard() -> dict[str, Any]:
-    return read_dashboard_payload()
+    return load_dashboard_payload()
 
 
 @app.post("/api/import")

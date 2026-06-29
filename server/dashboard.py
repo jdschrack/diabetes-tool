@@ -1,15 +1,16 @@
-#!/usr/bin/env python3
-"""Build browser-ready dashboard data from Tidepool SQLite and log.csv."""
+"""Build the dashboard payload directly from the SQLite database.
+
+This module is imported by the FastAPI app. There are no file reads here —
+the only source is the Tidepool SQLite database produced by the import
+scripts.
+"""
 
 from __future__ import annotations
 
-import argparse
-import csv
 import json
 import sqlite3
 from collections import defaultdict
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 
@@ -22,72 +23,6 @@ RANGES = [
 ]
 
 MEAL_ORDER = ["breakfast", "lunch", "dinner", "overnight/other"]
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", default=Path("analysis/tidepool.db"), type=Path)
-    parser.add_argument("--log", default=Path("log.csv"), type=Path)
-    parser.add_argument("--out", default=Path("dashboard/dashboard-data.js"), type=Path)
-    return parser.parse_args()
-
-
-def parse_float(value: str | None) -> float | None:
-    if value is None:
-        return None
-    cleaned = value.strip().replace(",", "")
-    if not cleaned:
-        return None
-    if cleaned.endswith("%"):
-        cleaned = cleaned[:-1]
-    try:
-        return float(cleaned)
-    except ValueError:
-        return None
-
-
-def parse_log(path: Path) -> dict[str, Any]:
-    rows = list(csv.reader(path.open(newline="", encoding="utf-8-sig")))
-    daily: list[dict[str, Any]] = []
-    baseline: list[dict[str, Any]] = []
-
-    for idx, row in enumerate(rows):
-        if row and row[0] == "Date":
-            headers = row
-            for data_row in rows[idx + 1 :]:
-                if not data_row or not data_row[0] or data_row[0].startswith("Average"):
-                    break
-                item = dict(zip(headers, data_row))
-                daily.append(
-                    {
-                        "date": item.get("Date"),
-                        "carbs": parse_float(item.get("Carbs (g)")),
-                        "total": parse_float(item.get("Total (u)")),
-                        "basal": parse_float(item.get("Basal (u)")),
-                        "bolus": parse_float(item.get("Bolus (u)")),
-                        "avg_bg": parse_float(item.get("Avg BG (mg/dL)")),
-                        "basal_pct": parse_float(item.get("Basal %")),
-                        "bolus_pct": parse_float(item.get("Bolus %")),
-                        "bolus_per_carb": parse_float(item.get("Bolus/g carb")),
-                        "carbs_per_bolus": parse_float(item.get("Carbs/bolus u")),
-                    }
-                )
-        if row and row[0] == "Metric":
-            headers = row
-            for data_row in rows[idx + 1 :]:
-                if not data_row or not data_row[0]:
-                    break
-                item = dict(zip(headers, data_row))
-                baseline.append(
-                    {
-                        "metric": item.get("Metric"),
-                        "ilet_30_day": item.get("iLet 30-day"),
-                        "twiist_avg": item.get("Twiist avg"),
-                        "change": item.get("Change"),
-                    }
-                )
-
-    return {"daily": daily, "baseline": baseline}
 
 
 def query_all(conn: sqlite3.Connection, sql: str) -> list[dict[str, Any]]:
@@ -368,6 +303,44 @@ def build_basal_deviation(conn: sqlite3.Connection) -> dict[str, Any]:
         "daily": daily_rows,
         "hourly": hourly_rows,
     }
+
+
+def build_journal_daily(tidepool: dict[str, Any]) -> list[dict[str, Any]]:
+    """Compute Journal daily rows from Tidepool-derived aggregates."""
+    insulin = {row["day"]: row for row in tidepool["daily_insulin"]}
+    food = {row["day"]: row for row in tidepool["daily_food"]}
+    glucose = {row["day"]: row for row in tidepool["daily_ranges"]}
+    days = sorted(set(insulin) | set(food) | set(glucose))
+
+    rows: list[dict[str, Any]] = []
+    for day in days:
+        insulin_row = insulin.get(day)
+        basal = insulin_row["basal_units"] if insulin_row else None
+        bolus = insulin_row["bolus_units"] if insulin_row else None
+        total = insulin_row["total_units"] if insulin_row else None
+        carbs = (food.get(day) or {}).get("carbs")
+        avg_bg = (glucose.get(day) or {}).get("avg_glucose")
+
+        basal_pct = round(100.0 * basal / total, 1) if basal is not None and total else None
+        bolus_pct = round(100.0 * bolus / total, 1) if bolus is not None and total else None
+        bolus_per_carb = round(bolus / carbs, 3) if bolus is not None and carbs else None
+        carbs_per_bolus = round(carbs / bolus, 1) if carbs is not None and bolus else None
+
+        rows.append(
+            {
+                "date": day,
+                "carbs": round(carbs, 1) if isinstance(carbs, (int, float)) else None,
+                "total": round(total, 1) if isinstance(total, (int, float)) else None,
+                "basal": round(basal, 1) if isinstance(basal, (int, float)) else None,
+                "bolus": round(bolus, 1) if isinstance(bolus, (int, float)) else None,
+                "avg_bg": avg_bg,
+                "basal_pct": basal_pct,
+                "bolus_pct": bolus_pct,
+                "bolus_per_carb": bolus_per_carb,
+                "carbs_per_bolus": carbs_per_bolus,
+            }
+        )
+    return rows
 
 
 def build_period_summaries(tidepool: dict[str, Any], log_data: dict[str, Any]) -> list[dict[str, Any]]:
@@ -757,7 +730,6 @@ def build_daily_events(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         if row.get("type") == "deviceEvent" and row.get("subtype") == "pumpSettingsOverride":
             high_target = raw.get("bgTarget.high")
             low_target = raw.get("bgTarget.low")
-            # Twiist exports elevated exercise targets as mmol/L values even when event units say mg/dL.
             if isinstance(high_target, (int, float)) and isinstance(low_target, (int, float)) and high_target >= 9:
                 kind = "exercise"
                 label = "Exercise"
@@ -808,6 +780,8 @@ def build_tidepool_data(conn: sqlite3.Connection) -> dict[str, Any]:
         SELECT
             substr(local_time, 1, 10) AS day,
             COUNT(*) AS readings,
+            SUM(CASE WHEN type = 'cbg' THEN 1 ELSE 0 END) AS cgm_readings,
+            SUM(CASE WHEN type = 'smbg' THEN 1 ELSE 0 END) AS smbg_readings,
             ROUND(AVG(value), 1) AS avg_glucose,
             ROUND(MIN(value), 1) AS min_glucose,
             ROUND(MAX(value), 1) AS max_glucose,
@@ -822,7 +796,7 @@ def build_tidepool_data(conn: sqlite3.Connection) -> dict[str, Any]:
             {range_selects},
             {range_pct_selects}
         FROM events
-        WHERE type = 'cbg' AND value IS NOT NULL
+        WHERE type IN ('cbg', 'smbg') AND value IS NOT NULL
         GROUP BY day
         ORDER BY day
         """,
@@ -853,18 +827,32 @@ def build_tidepool_data(conn: sqlite3.Connection) -> dict[str, Any]:
         ORDER BY local_time
         """,
     )
+    smbg_points = query_all(
+        conn,
+        """
+        SELECT
+            substr(local_time, 1, 10) AS day,
+            local_time,
+            ROUND(value, 1) AS value
+        FROM events
+        WHERE type = 'smbg' AND value IS NOT NULL
+        ORDER BY local_time
+        """,
+    )
     totals = query_all(
         conn,
         """
         SELECT
             COUNT(*) AS readings,
+            SUM(CASE WHEN type = 'cbg' THEN 1 ELSE 0 END) AS cgm_readings,
+            SUM(CASE WHEN type = 'smbg' THEN 1 ELSE 0 END) AS smbg_readings,
             ROUND(AVG(value), 1) AS avg_glucose,
             ROUND(MIN(value), 1) AS min_glucose,
             ROUND(MAX(value), 1) AS max_glucose,
             ROUND(SQRT(AVG(value * value) - AVG(value) * AVG(value)), 1) AS stddev_glucose,
             ROUND(100.0 * SQRT(AVG(value * value) - AVG(value) * AVG(value)) / AVG(value), 1) AS cv_pct
         FROM events
-        WHERE type = 'cbg' AND value IS NOT NULL
+        WHERE type IN ('cbg', 'smbg') AND value IS NOT NULL
         """,
     )[0]
 
@@ -878,44 +866,62 @@ def build_tidepool_data(conn: sqlite3.Connection) -> dict[str, Any]:
         "daily_insulin": daily_insulin,
         "daily_food": food,
         "glucose_points": glucose_points,
+        "smbg_points": smbg_points,
         "daily_events": build_daily_events(conn),
         "basal_deviation": basal_deviation,
         "totals": totals,
     }
 
 
-def main() -> None:
-    args = parse_args()
-    conn = sqlite3.connect(args.db)
-    try:
-        log_data = parse_log(args.log)
-        cronometer_data = build_cronometer_data(conn)
+def empty_tidepool_data() -> dict[str, Any]:
+    return {
+        "ranges": [
+            {"key": key, "label": label, "bounds": bounds}
+            for key, label, bounds, _condition in RANGES
+        ],
+        "daily_ranges": [],
+        "daily_insulin": [],
+        "daily_food": [],
+        "glucose_points": [],
+        "smbg_points": [],
+        "daily_events": [],
+        "basal_deviation": {"schedule": [], "daily": [], "hourly": []},
+        "totals": {
+            "readings": 0,
+            "cgm_readings": 0,
+            "smbg_readings": 0,
+            "avg_glucose": None,
+            "min_glucose": None,
+            "max_glucose": None,
+            "stddev_glucose": None,
+            "cv_pct": None,
+        },
+    }
+
+
+def build_payload(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Compute the full dashboard payload from the SQLite database.
+
+    Returns a well-formed empty payload when the database has no tables yet,
+    so the dashboard can render an empty state instead of erroring out.
+    """
+    cronometer_data = build_cronometer_data(conn)
+    if table_exists(conn, "events"):
         tidepool_data = build_tidepool_data(conn)
+        log_data = {"daily": build_journal_daily(tidepool_data)}
         period_summaries = build_period_summaries(tidepool_data, log_data)
-        payload = {
-            "generated_from": {
-                "db": str(args.db),
-                "log": str(args.log),
-                "cronometer": str(args.db),
-            },
-            "tidepool": tidepool_data,
-            "log": log_data,
-            "cronometer": cronometer_data,
-            "period_summaries": period_summaries,
-            "meal_analysis": build_meal_analysis(conn, tidepool_data, period_summaries),
-        }
-    finally:
-        conn.close()
+        meal_analysis = build_meal_analysis(conn, tidepool_data, period_summaries)
+    else:
+        tidepool_data = empty_tidepool_data()
+        log_data = {"daily": []}
+        period_summaries = []
+        meal_analysis = {"all": [], "periods": {}, "events": []}
 
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(
-        "window.DASHBOARD_DATA = "
-        + json.dumps(payload, ensure_ascii=False, indent=2)
-        + ";\n",
-        encoding="utf-8",
-    )
-    print(f"Wrote {args.out}")
-
-
-if __name__ == "__main__":
-    main()
+    return {
+        "generated_from": {"db": "sqlite"},
+        "tidepool": tidepool_data,
+        "log": log_data,
+        "cronometer": cronometer_data,
+        "period_summaries": period_summaries,
+        "meal_analysis": meal_analysis,
+    }

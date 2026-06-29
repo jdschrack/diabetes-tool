@@ -313,7 +313,7 @@ function glucoseAverageOption(rows: DailyRange[]): EChartsOption {
     },
     series: [
       {
-        name: "Avg CGM",
+        name: "Avg Glucose",
         type: "line",
         smooth: true,
         symbol: "circle",
@@ -418,9 +418,11 @@ function dayGlucoseOption(
   events: DashboardData["tidepool"]["daily_events"]
 ): EChartsOption {
   const rows = data.tidepool.glucose_points.filter((row) => row.day === day);
+  const smbgRows = data.tidepool.smbg_points.filter((row) => row.day === day);
+  const fallbackRows = rows.length ? rows : smbgRows;
   const nearestGlucose = (time: string, fallback: number | null | undefined = 90) => {
     const eventTime = new Date(time).getTime();
-    const nearest = rows.reduce(
+    const nearest = fallbackRows.reduce(
       (best, row) => {
         const diff = Math.abs(new Date(row.local_time).getTime() - eventTime);
         return !best || diff < best.diff ? { diff, value: row.value } : best;
@@ -459,6 +461,9 @@ function dayGlucoseOption(
               const event = item as unknown as { value: [string, number, string, string, string | null] };
               return `${event.value[2]}: ${event.value[4] || event.value[3]}`;
             }
+            if (typed.seriesName === "Fingerstick") {
+              return `Fingerstick: ${format(typed.value[1], 0)} mg/dL`;
+            }
             return `CGM: ${format(typed.value[1], 0)} mg/dL`;
           })
           .join("<br/>");
@@ -467,6 +472,8 @@ function dayGlucoseOption(
     grid: { left: 48, right: 22, top: 18, bottom: 34 },
     xAxis: {
       type: "time",
+      min: `${day}T00:00:00`,
+      max: `${day}T23:59:59`,
       axisLine: { lineStyle: { color: "#dfe6ef" } },
       axisTick: { show: false },
       axisLabel: { color: "#657186" },
@@ -538,6 +545,16 @@ function dayGlucoseOption(
           fontSize: 11,
           formatter: (params) => (params as unknown as { value: [string, number, string] }).value[2]
         },
+        tooltip: { trigger: "item" }
+      },
+      {
+        name: "Fingerstick",
+        type: "scatter",
+        data: smbgRows.map((row) => [row.local_time, row.value]),
+        z: 11,
+        symbol: "diamond",
+        symbolSize: 14,
+        itemStyle: { color: "#d64f4f", borderColor: "#fff", borderWidth: 2 },
         tooltip: { trigger: "item" }
       }
     ]
@@ -1296,74 +1313,6 @@ function MacroCaloriesPanel({
         <p>{emptyMessage}</p>
       )}
     </article>
-  );
-}
-
-function parseBaselineValue(value: string) {
-  const parsed = Number(value.replace("%", "").replace(",", ""));
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function twiistMetricValue(metric: string, averages: ReturnType<typeof journalAverages>) {
-  if (metric.startsWith("Total daily insulin")) return averages.total;
-  if (metric.startsWith("Basal (u)")) return averages.basal;
-  if (metric.startsWith("Bolus (u)")) return averages.bolus;
-  if (metric.startsWith("Avg glucose")) return averages.avgBg;
-  if (metric.startsWith("Basal %")) return averages.basalPct;
-  if (metric.startsWith("GMI")) return averages.gmi;
-  return null;
-}
-
-function formatComparisonMetric(metric: string, value: number | null) {
-  if (value === null) return "--";
-  if (metric.startsWith("Avg glucose")) return format(value, 0);
-  if (metric.startsWith("Basal %") || metric.startsWith("GMI")) return `${format(value, metric.startsWith("GMI") ? 2 : 0)}%`;
-  return format(value, 1);
-}
-
-function BaselineComparisonTable({
-  rows,
-  averages
-}: {
-  rows: DashboardData["log"]["baseline"];
-  averages: ReturnType<typeof journalAverages>;
-}) {
-  return (
-    <div className="baseline-grid">
-      {rows.map((row) => {
-        const iletValue = parseBaselineValue(row.ilet_30_day);
-        const twiistValue = twiistMetricValue(row.metric, averages);
-        const change = iletValue && twiistValue !== null ? ((twiistValue - iletValue) / iletValue) * 100 : null;
-        const direction = change === null ? "flat" : change > 0 ? "increase" : change < 0 ? "decrease" : "flat";
-        const max = Math.max(Math.abs(iletValue || 0), Math.abs(twiistValue || 0), 1);
-        return (
-          <section className="baseline-card" key={row.metric}>
-            <div className="baseline-card-header">
-              <strong>{row.metric}</strong>
-              <span className={`trend ${direction}`} aria-label={direction}>
-                {direction === "increase" ? "▲" : direction === "decrease" ? "▼" : "•"}
-              </span>
-            </div>
-            <div className="baseline-bars">
-              <div>
-                <span>iLet 30-day</span>
-                <strong>{row.ilet_30_day}</strong>
-                <i style={{ width: `${Math.max(6, ((iletValue || 0) / max) * 100)}%` }} />
-              </div>
-              <div>
-                <span>Twiist avg</span>
-                <strong>{formatComparisonMetric(row.metric, twiistValue)}</strong>
-                <i style={{ width: `${Math.max(6, ((twiistValue || 0) / max) * 100)}%` }} />
-              </div>
-            </div>
-            <div className="baseline-change">
-              <span>Change</span>
-              <strong>{change === null ? "--" : `${format(change, 0)}%`}</strong>
-            </div>
-          </section>
-        );
-      })}
-    </div>
   );
 }
 
@@ -2128,6 +2077,7 @@ export default function App() {
           food: selectedDayFood,
           basal: selectedDayBasal,
           glucose: dashboard.tidepool.glucose_points.filter((row) => row.day === day),
+          smbg: dashboard.tidepool.smbg_points.filter((row) => row.day === day),
           meals: selectedDayMeals,
           mealRows: selectedDayMealRows,
           events: selectedDayEvents
@@ -2151,7 +2101,7 @@ export default function App() {
           mealRows: summaryMealRows,
           mealEvents: summaryMealEvents,
           metrics: [
-            ["Avg CGM", `${format(summaryAvgGlucose, 0)} mg/dL`, "Daily average glucose", "#2f80ed"],
+            ["Avg Glucose", `${format(summaryAvgGlucose, 0)} mg/dL`, "Daily average glucose", "#2f80ed"],
             ["Time In Range", `${format(summaryTimeInRange, 0)}%`, "70-180 mg/dL", "#14905d"],
             ["Extra Basal", `${format(summaryExtraBasal, 1)}U`, "Above programmed basal", "#7c5ce7"],
             ["Correction Load", `${format(summaryCorrectionLoad, 0)}%`, "Extra basal / total insulin", "#7c5ce7"],
@@ -2173,8 +2123,7 @@ export default function App() {
         journal: {
           rows: journalRows,
           stats: journalStats,
-          previousStats: previousJournalStats,
-          baseline: dashboard.log.baseline
+          previousStats: previousJournalStats
         }
       });
     }
@@ -2214,7 +2163,7 @@ export default function App() {
         <header className="topbar">
           <div>
             <h1>{activeTab === "today" ? "Daily Dashboard" : activeTab[0].toUpperCase() + activeTab.slice(1)}</h1>
-            <p>{data.tidepool.daily_ranges.length} days · {data.tidepool.totals.readings} CGM readings · local data</p>
+            <p>{data.tidepool.daily_ranges.length} days · {data.tidepool.totals.cgm_readings} CGM · {data.tidepool.totals.smbg_readings} fingerstick readings · local data</p>
           </div>
           <div className="header-actions">
             {activeTab === "today" && (
@@ -2408,12 +2357,12 @@ export default function App() {
               <div className="summary-hero-stat">
                 <span>Time In Range</span>
                 <strong>{format(summaryTimeInRange, 0)}%</strong>
-                <small>Avg CGM {format(summaryAvgGlucose, 0)} mg/dL</small>
+                <small>Avg Glucose {format(summaryAvgGlucose, 0)} mg/dL</small>
               </div>
             </article>
 
             <section className="summary-metric-grid">
-              <SummaryMetricCard label="Avg CGM" value={`${format(summaryAvgGlucose, 0)} mg/dL`} context="daily average glucose" values={summaryDailyRanges.map((row) => row.avg_glucose)} current={summaryAvgGlucose} previous={previousAvgGlucose} color="#2f80ed" />
+              <SummaryMetricCard label="Avg Glucose" value={`${format(summaryAvgGlucose, 0)} mg/dL`} context="daily average glucose" values={summaryDailyRanges.map((row) => row.avg_glucose)} current={summaryAvgGlucose} previous={previousAvgGlucose} color="#2f80ed" />
               <SummaryMetricCard label="Time In Range" value={`${format(summaryTimeInRange, 0)}%`} context="70-180 mg/dL" values={summaryDailyRanges.map((row) => row.in_range_pct)} current={summaryTimeInRange} previous={previousTimeInRange} color="#14905d" lowerIsBetter={false} deltaSuffix="%" />
               <SummaryMetricCard label="Extra Basal" value={`${format(summaryExtraBasal, 1)}U`} context="above programmed basal" values={summaryDailyBasal.map((row) => row.extra_basal_units)} current={summaryExtraBasal} previous={previousDailyBasal.length ? previousExtraBasal : null} color="#7c5ce7" deltaDigits={1} deltaSuffix="U" />
               <SummaryMetricCard label="Extra / Day" value={`${format(summaryExtraBasalPerDay, 1)}U`} context="avg correction basal" values={summaryDailyBasal.map((row) => row.extra_basal_units)} current={summaryExtraBasalPerDay} previous={previousExtraBasalPerDay} color="#7c5ce7" deltaDigits={1} deltaSuffix="U" />
@@ -2529,16 +2478,6 @@ export default function App() {
               <SummaryMetricCard label="Carbs/U" value={format(journalStats.carbsPerBolus, 1)} context="carbs per bolus unit" values={journalRows.slice().reverse().map((row) => row.carbs_per_bolus)} current={journalStats.carbsPerBolus} previous={previousJournalStats.carbsPerBolus} color="#f59e0b" lowerIsBetter={false} deltaDigits={1} />
               <SummaryMetricCard label="GMI" value={`${format(journalStats.gmi, 2)}%`} context="from avg glucose" values={journalRows.slice().reverse().map((row) => gmiFromAverageGlucose(row.avg_bg))} current={journalStats.gmi} previous={previousJournalStats.gmi} color="#d64f4f" deltaDigits={2} deltaSuffix="%" />
             </section>
-
-            <article className="panel full">
-              <div className="section-heading">
-                <div>
-                  <h2>iLet 30-Day Baseline vs Twiist</h2>
-                  <p>Twiist averages are calculated from the selected Journal grouping and compared against the CSV iLet baseline.</p>
-                </div>
-              </div>
-              <BaselineComparisonTable rows={data.log.baseline} averages={journalStats} />
-            </article>
 
             <article className="panel full">
               <div className="section-heading">

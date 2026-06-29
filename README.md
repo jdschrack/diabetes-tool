@@ -1,9 +1,10 @@
 # SignalWell Diabetes Dashboard
 
 SignalWell is a local-first dashboard for reviewing diabetes, insulin, glucose,
-meal, journal, and nutrition data. It imports Tidepool pump/CGM exports and
-Cronometer nutrition CSVs into a local SQLite database, builds derived analysis
-data, and serves a React dashboard through FastAPI.
+meal, journal, and nutrition data. Tidepool pump/CGM exports and Cronometer
+nutrition CSVs are imported into a local SQLite database. The FastAPI backend
+computes the dashboard payload directly from that database on every request and
+serves a React frontend.
 
 The goal is pattern review for personal insight and care-team conversations. It
 is not a dosing calculator and does not make therapy recommendations.
@@ -13,11 +14,11 @@ is not a dosing calculator and does not make therapy recommendations.
 - Imports Tidepool JSON exports into `analysis/tidepool.db`.
 - Imports Cronometer CSV exports into the same SQLite database.
 - Skips exact duplicate Tidepool records and Cronometer rows.
-- Builds daily glucose, insulin, basal, meal, event, journal, and nutrition
-  summaries.
+- Computes daily glucose, insulin, basal, meal, event, journal, and nutrition
+  summaries directly from the database at request time — there is no
+  precomputed file cache.
 - Shows Daily, Summary, Journal, Imports, and Help views in the web app.
 - Exports Daily, Summary, and Journal views to generated PDF reports.
-- Keeps all source data and generated analysis local to the repository.
 
 ## Dashboard Views
 
@@ -26,16 +27,13 @@ is not a dosing calculator and does not make therapy recommendations.
 The Daily page focuses on one selected date.
 
 - Glucose trend for the selected day, with carb, exercise, and note markers.
+  CGM is drawn as the trend line; fingerstick (SMBG) readings overlay as red
+  diamond markers. The time axis always spans the full 24 hours.
 - Day Summary Stack with Time in Range, Total Carbs, Average Glucose, basal
   correction load, insulin split, and confidence-style signals.
 - Basal rate profile compared with programmed basal.
 - Meal recovery and selected-day meal impact analysis.
-- Daily Macro Calories from Cronometer, including:
-  - total calories
-  - macro calorie donut
-  - macro breakdown for carbs, fat, and protein
-  - fixed Breakfast, Lunch, Dinner, and Snacks cards
-  - zero-filled meal cards when Cronometer has no row for that group
+- Daily Macro Calories from Cronometer.
 
 ### Summary
 
@@ -44,15 +42,15 @@ The Summary page reviews a selectable date range.
 - Time in Range and glucose summaries.
 - Basal Profile, Correction Load, and Pattern Board summaries.
 - Meal impact trend and recovery metrics.
-- Nutrition Macro Calories for the selected range, including aggregate macro
-  balance and daily macro calorie trends.
+- Nutrition Macro Calories for the selected range.
 
 ### Journal
 
 The Journal page uses the same date selector as Summary.
 
-- Journal Review metrics from `log.csv`.
-- iLet baseline comparison.
+- Journal Review metrics derived from the SQLite database (insulin from
+  `daily_insulin`, carbs from `food`, average BG from `daily_glucose` which
+  includes both CGM and fingerstick readings).
 - Journal Summary table.
 - Food Log table from imported Cronometer rows.
 
@@ -62,7 +60,7 @@ The Imports page supports:
 
 - Tidepool JSON upload.
 - Cronometer CSV upload.
-- Import job status with upload, import, build, and reload steps.
+- Import job status with upload, import, and refresh steps.
 
 ### Help
 
@@ -85,9 +83,8 @@ http://localhost:8000
 
 Mounted paths:
 
-- `analysis/` - persistent SQLite database and import summary
-- `data/` - uploaded imports and local nutrition import artifacts
-- `log.csv` - read-only daily journal input
+- `analysis/` - persistent SQLite database
+- `data/` - uploaded imports
 
 ## Local Development
 
@@ -128,9 +125,7 @@ Append another Tidepool export and skip exact duplicate records:
 python3 scripts/import_tidepool.py data/imports/TidepoolExport.json --append
 ```
 
-Duplicate detection uses a SHA-256 hash of each record's canonical JSON. This
-allows overlapping Tidepool exports to be appended while preserving distinct
-records that share an `id` but differ by type or content.
+Duplicate detection uses a SHA-256 hash of each record's canonical JSON.
 
 ### Cronometer Import
 
@@ -150,28 +145,17 @@ The importer requires these columns:
 - `Protein (g)`
 - `Fat (g)`
 
-It stores rows in `cronometer_nutrition`, hashes the canonical CSV row for
-duplicate detection, and prints a JSON import summary.
+## Dashboard Payload
 
-### Build Dashboard Data
-
-After importing data, rebuild the dashboard payload:
-
-```sh
-python3 scripts/build_dashboard_data.py
-```
-
-This writes:
-
-```text
-dashboard/dashboard-data.js
-```
-
-The React app reads the same payload through:
+The React app reads the entire payload through one endpoint:
 
 ```text
 GET /api/dashboard
 ```
+
+There is no precomputed dashboard data file. The endpoint opens
+`analysis/tidepool.db` on every request, runs `server/dashboard.build_payload`,
+and returns JSON.
 
 ## API
 
@@ -183,8 +167,8 @@ FastAPI endpoints:
 - `POST /api/import/cronometer` - Cronometer CSV import
 - `GET /api/import/{job_id}` - import status
 
-Import jobs run in the background and rebuild `dashboard/dashboard-data.js` when
-the import completes.
+Import jobs run in the background. After the import script returns, the next
+`/api/dashboard` request reflects the new data automatically.
 
 ## SQLite Contents
 
@@ -224,6 +208,10 @@ Daily glucose is split into:
 - High: `181-250 mg/dL`
 - Very High: `>250 mg/dL`
 
+Both CGM (`cbg`) and fingerstick (`smbg`) readings count toward the daily
+average and time-in-range distribution, so days with no CGM coverage still get
+a meaningful summary.
+
 ### Meal Window Analysis
 
 Meal analysis groups timezone-aligned food records that occur within 75 minutes
@@ -239,12 +227,14 @@ of each other into one meal window. It evaluates the next 4 hours for:
 - low-after-high risk
 - meal burden score
 
-Duplicate non-timezone-adjusted upload rows are excluded from meal analysis.
+Meal analysis uses CGM (`cbg`) only because it depends on dense time-series
+data; sparse fingerstick readings would distort the area-over-threshold and
+recovery calculations.
 
 ### Basal Correction Load
 
-Basal correction load is computed from positive basal delivered above the active
-scheduled basal profile:
+Basal correction load is computed from positive basal delivered above the
+active scheduled basal profile:
 
 ```text
 extra basal = max(0, delivered basal units - scheduled basal units)
@@ -287,13 +277,9 @@ python3 -c 'import sqlite3; c=sqlite3.connect("analysis/tidepool.db"); print(c.e
 
 ## Generated And Local Files
 
-Common generated/local files:
+- `analysis/tidepool.db` - SQLite database (source of truth at runtime)
+- `analysis/tidepool_summary.md` - import summary written by the Tidepool importer
+- `data/imports/*` - uploaded Tidepool/Cronometer exports
+- `mockups/*` - design references
 
-- `analysis/tidepool.db`
-- `analysis/tidepool_summary.md`
-- `dashboard/dashboard-data.js`
-- `data/imports/*`
-- `mockups/*`
-
-These files are useful for local review, but be intentional before committing
-personal health exports or generated data snapshots.
+Be intentional before committing personal health exports.

@@ -1,6 +1,8 @@
 export type DailyRange = {
   day: string;
   readings: number;
+  cgm_readings: number;
+  smbg_readings: number;
   avg_glucose: number;
   min_glucose: number;
   max_glucose: number;
@@ -159,8 +161,9 @@ export type DashboardData = {
     daily_insulin: DailyInsulin[];
     daily_food: DailyFood[];
     glucose_points: GlucosePoint[];
+    smbg_points: GlucosePoint[];
     daily_events: DailyEvent[];
-    totals: { readings: number };
+    totals: { readings: number; cgm_readings: number; smbg_readings: number };
   };
   log: {
     daily: Array<{
@@ -174,12 +177,6 @@ export type DashboardData = {
       bolus_pct: number | null;
       bolus_per_carb: number | null;
       carbs_per_bolus: number | null;
-    }>;
-    baseline: Array<{
-      metric: string;
-      ilet_30_day: string;
-      twiist_avg: string;
-      change: string;
     }>;
   };
   cronometer: {
