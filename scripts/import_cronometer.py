@@ -183,6 +183,8 @@ def main() -> None:
     args.db.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(args.db)
     try:
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA busy_timeout = 5000")
         create_schema(conn)
         imported, duplicates = insert_rows(conn, rows, headers, args.csv_path.name)
         conn.commit()

@@ -176,7 +176,7 @@ function drawLineChart(
   y: number,
   w: number,
   h: number,
-  points: Array<{ label: string; value: number | null | undefined }>,
+  points: Array<{ label: string; value: number | null | undefined; position?: number }>,
   options: {
     min?: number;
     max?: number;
@@ -217,8 +217,9 @@ function drawLineChart(
   const coords = points
     .map((point, index) => {
       if (typeof point.value !== "number" || !Number.isFinite(point.value)) return null;
+      const position = point.position ?? index / Math.max(1, points.length - 1);
       return {
-        x: chart.x + (index / Math.max(1, points.length - 1)) * chart.w,
+        x: chart.x + Math.max(0, Math.min(1, position)) * chart.w,
         y: chart.y + chart.h - ((point.value - min) / spread) * chart.h,
         value: point.value
       };
@@ -349,11 +350,11 @@ function drawTimeInRangeBoard(doc: jsPDF, y: number, ranges: DailyRange[], maxRo
     doc.text(row.day.slice(5), x, rowY + 10);
     let bx = x + labelW;
     const buckets: Array<[number, string]> = [
-      [row.very_low_pct, colors.red],
-      [row.low_pct, "#f28a74"],
-      [row.in_range_pct, "#65c99a"],
-      [row.high_pct, colors.amber],
-      [row.very_high_pct, colors.amberDark]
+      [row.very_low_pct ?? 0, colors.red],
+      [row.low_pct ?? 0, "#f28a74"],
+      [row.in_range_pct ?? 0, "#65c99a"],
+      [row.high_pct ?? 0, colors.amber],
+      [row.very_high_pct ?? 0, colors.amberDark]
     ];
     buckets.forEach(([pct, color], bucketIndex) => {
       const bw = Math.max(0, (pct / 100) * barW);
@@ -455,7 +456,11 @@ function todayReport(doc: jsPDF, payload: PdfReportPayload) {
     y,
     page.width - page.margin * 2,
     170,
-    today.glucose.map((row) => ({ label: row.local_time.slice(11, 16), value: row.value })),
+    today.glucose.map((row) => ({
+      label: row.local_time.slice(11, 16),
+      value: row.value,
+      position: minuteOfDay(row.local_time) / 1440
+    })),
     {
       min: 40,
       max: glucoseMax,
@@ -495,6 +500,9 @@ function summaryReport(doc: jsPDF, payload: PdfReportPayload) {
   y = drawHeader(doc, payload, y);
   y = drawCards(doc, y, summary.metrics);
   y = drawSectionTitle(doc, y + 4, "Daily CGM Trend", "Average glucose by day in the selected range.");
+  const summaryAverageValues = summary.ranges
+    .map((row) => row.avg_glucose)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
   drawLineChart(
     doc,
     page.margin,
@@ -502,7 +510,7 @@ function summaryReport(doc: jsPDF, payload: PdfReportPayload) {
     page.width - page.margin * 2,
     145,
     summary.ranges.map((row) => ({ label: row.day.slice(5), value: row.avg_glucose })),
-    { min: 60, max: Math.max(260, ...summary.ranges.map((row) => row.avg_glucose)), thresholdLow: 70, thresholdHigh: 180, color: colors.blue }
+    { min: 60, max: Math.max(260, ...summaryAverageValues), thresholdLow: 70, thresholdHigh: 180, color: colors.blue }
   );
   y += 164;
 

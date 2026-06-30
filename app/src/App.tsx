@@ -9,6 +9,15 @@ import { generateReportPdf } from "./reportPdf";
 const format = (value: number | null | undefined, digits = 1) =>
   value === null || value === undefined || Number.isNaN(value) ? "--" : value.toFixed(digits).replace(/\.0$/, "");
 
+function escapeHtml(value: unknown) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 type JournalRow = DashboardData["log"]["daily"][number];
 type ActiveTab = "today" | "summary" | "journal" | "imports" | "help";
 
@@ -238,7 +247,10 @@ function rangeOption(rows: DailyRange[]): EChartsOption {
       name,
       type: "bar",
       stack: "range",
-      data: rows.map((row) => row[key] as number),
+      data: rows.map((row) => {
+        const value = row[key];
+        return typeof value === "number" ? value : 0;
+      }),
       barWidth: "58%",
       itemStyle: { color, borderRadius: radius }
     }))
@@ -420,7 +432,7 @@ function dayGlucoseOption(
   const rows = data.tidepool.glucose_points.filter((row) => row.day === day);
   const smbgRows = data.tidepool.smbg_points.filter((row) => row.day === day);
   const fallbackRows = rows.length ? rows : smbgRows;
-  const nearestGlucose = (time: string, fallback: number | null | undefined = 90) => {
+  const nearestGlucose = (time: string, fallback?: number | null) => {
     const eventTime = new Date(time).getTime();
     const nearest = fallbackRows.reduce(
       (best, row) => {
@@ -429,19 +441,39 @@ function dayGlucoseOption(
       },
       null as { diff: number; value: number } | null
     );
-    return nearest?.value ?? fallback ?? 90;
+    return nearest?.value ?? fallback ?? null;
   };
-  const mealMarkers = meals.map((meal) => {
-    return {
-      value: [meal.start, nearestGlucose(meal.start, meal.pre_bg), meal.carbs, meal.meal],
-      itemStyle: { color: "#1f4f8f" }
-    };
-  });
-  const eventMarkers = events.map((event) => ({
-    value: [event.local_time, nearestGlucose(event.local_time), event.label, event.kind, event.detail],
-    symbol: event.kind === "exercise" ? "triangle" : "diamond",
-    itemStyle: { color: event.kind === "exercise" ? "#14905d" : "#f59e0b" }
-  }));
+  const mealMarkers = meals
+    .map((meal) => {
+      const glucose = nearestGlucose(meal.start, meal.pre_bg);
+      return typeof glucose === "number"
+        ? {
+            value: [meal.start, glucose, meal.carbs, meal.meal] as [string, number, number, string],
+            itemStyle: { color: "#1f4f8f" }
+          }
+        : null;
+    })
+    .filter((marker): marker is { value: [string, number, number, string]; itemStyle: { color: string } } => marker !== null);
+  const eventMarkers = events
+    .map((event) => {
+      const glucose = nearestGlucose(event.local_time);
+      return typeof glucose === "number"
+        ? {
+            value: [event.local_time, glucose, event.label, event.kind, event.detail] as [string, number, string, string, string | null],
+            symbol: event.kind === "exercise" ? "triangle" : "diamond",
+            itemStyle: { color: event.kind === "exercise" ? "#14905d" : "#f59e0b" }
+          }
+        : null;
+    })
+    .filter(
+      (
+        marker
+      ): marker is {
+        value: [string, number, string, string, string | null];
+        symbol: string;
+        itemStyle: { color: string };
+      } => marker !== null
+    );
   return {
     color: ["#14905d", "#1f4f8f", "#f59e0b"],
     tooltip: {
@@ -455,16 +487,16 @@ function dayGlucoseOption(
           .map((item) => {
             const typed = item as unknown as { seriesName: string; value: [string, number, number?, string?] };
             if (typed.seriesName === "Carbs") {
-              return `Carbs: ${format(typed.value[2], 0)}g (${typed.value[3]})`;
+              return `Carbs: ${format(typed.value[2], 0)}g (${escapeHtml(typed.value[3])})`;
             }
             if (typed.seriesName === "Events") {
               const event = item as unknown as { value: [string, number, string, string, string | null] };
-              return `${event.value[2]}: ${event.value[4] || event.value[3]}`;
+              return `${escapeHtml(event.value[2])}: ${escapeHtml(event.value[4] || event.value[3])}`;
             }
             if (typed.seriesName === "Fingerstick") {
               return `Fingerstick: ${format(typed.value[1], 0)} mg/dL`;
             }
-            return `CGM: ${format(typed.value[1], 0)} mg/dL`;
+            return `${rows.length ? "CGM" : "Fingerstick trend"}: ${format(typed.value[1], 0)} mg/dL`;
           })
           .join("<br/>");
       }
@@ -499,10 +531,10 @@ function dayGlucoseOption(
     },
     series: [
       {
-        name: "CGM",
+        name: rows.length ? "CGM" : "Fingerstick trend",
         type: "line",
         smooth: true,
-        data: rows.map((row) => [row.local_time, row.value]),
+        data: fallbackRows.map((row) => [row.local_time, row.value]),
         markArea: { itemStyle: { color: "rgba(101,201,154,0.18)" }, data: [[{ yAxis: 70 }, { yAxis: 180 }]] },
         markLine: {
           symbol: "none",

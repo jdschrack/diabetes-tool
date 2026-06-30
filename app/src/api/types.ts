@@ -3,16 +3,21 @@ export type DailyRange = {
   readings: number;
   cgm_readings: number;
   smbg_readings: number;
-  avg_glucose: number;
-  min_glucose: number;
-  max_glucose: number;
-  stddev_glucose: number;
-  cv_pct: number;
-  in_range_pct: number;
-  very_low_pct: number;
-  low_pct: number;
-  high_pct: number;
-  very_high_pct: number;
+  avg_glucose: number | null;
+  min_glucose: number | null;
+  max_glucose: number | null;
+  stddev_glucose: number | null;
+  cv_pct: number | null;
+  in_range_count: number;
+  very_low_count: number;
+  low_count: number;
+  high_count: number;
+  very_high_count: number;
+  in_range_pct: number | null;
+  very_low_pct: number | null;
+  low_pct: number | null;
+  high_pct: number | null;
+  very_high_pct: number | null;
 };
 
 export type BasalDaily = {
@@ -55,8 +60,8 @@ export type PeriodSummary = {
   days_available: number;
   start: string;
   end: string;
-  avg_glucose: number;
-  time_in_range_pct: number;
+  avg_glucose: number | null;
+  time_in_range_pct: number | null;
   delivered_basal_units: number;
   scheduled_basal_units: number;
   extra_basal_units: number;
@@ -163,7 +168,16 @@ export type DashboardData = {
     glucose_points: GlucosePoint[];
     smbg_points: GlucosePoint[];
     daily_events: DailyEvent[];
-    totals: { readings: number; cgm_readings: number; smbg_readings: number };
+    totals: {
+      readings: number;
+      cgm_readings: number;
+      smbg_readings: number;
+      avg_glucose: number | null;
+      min_glucose: number | null;
+      max_glucose: number | null;
+      stddev_glucose: number | null;
+      cv_pct: number | null;
+    };
   };
   log: {
     daily: Array<{
