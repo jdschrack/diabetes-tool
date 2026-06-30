@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-import shutil
+import logging
+import os
 import sqlite3
 import subprocess
 import sys
@@ -19,17 +20,28 @@ from fastapi.staticfiles import StaticFiles
 from server.dashboard import build_payload
 
 
+logger = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "analysis" / "tidepool.db"
 IMPORT_DIR = ROOT / "data" / "imports"
 STATIC_DIR = ROOT / "app" / "dist"
+MAX_UPLOAD_BYTES = int(os.environ.get("SIGNALWELL_MAX_UPLOAD_BYTES", str(50 * 1024 * 1024)))
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get(
+        "SIGNALWELL_CORS_ORIGINS",
+        "http://localhost:8000,http://127.0.0.1:8000,http://localhost:3000,http://127.0.0.1:3000",
+    ).split(",")
+    if origin.strip()
+]
 IMPORT_JOBS: dict[str, dict[str, Any]] = {}
 IMPORT_JOBS_LOCK = threading.Lock()
+IMPORT_RUN_LOCK = threading.Lock()
 
 app = FastAPI(title="Tidepool Dashboard")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -54,6 +66,7 @@ def load_dashboard_payload() -> dict[str, Any]:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     try:
+        conn.execute("PRAGMA busy_timeout = 5000")
         return build_payload(conn)
     finally:
         conn.close()
@@ -111,20 +124,35 @@ def update_import_step(job_id: str, step_key: str, status: str, message: str = "
 
 
 def fail_import_job(job_id: str, step_key: str, result: subprocess.CompletedProcess[str]) -> None:
+    logger.error(
+        "Import job %s failed during %s with exit code %s\nstdout:\n%s\nstderr:\n%s",
+        job_id,
+        step_key,
+        result.returncode,
+        result.stdout[-8000:],
+        result.stderr[-8000:],
+    )
     update_import_step(job_id, step_key, "failed", f"Command failed with exit code {result.returncode}")
     update_import_job(
         job_id,
         status="failed",
         message=f"Import failed during {step_key}",
-        stdout=result.stdout[-8000:],
-        stderr=result.stderr[-8000:],
+        stdout="",
+        stderr="Import failed. Check server logs for details.",
     )
 
 
 def run_import_job(job_id: str, destination: Path) -> None:
-    update_import_job(job_id, status="running", message="Importing Tidepool records")
-    update_import_step(job_id, "import", "running", "Running Tidepool SQLite import")
-    result = run_script(["scripts/import_tidepool.py", str(destination), "--append"])
+    if not IMPORT_RUN_LOCK.acquire(blocking=False):
+        update_import_step(job_id, "import", "failed", "Another import is already running")
+        update_import_job(job_id, status="failed", message="Import failed during import", stderr="Another import is already running.")
+        return
+    try:
+        update_import_job(job_id, status="running", message="Importing Tidepool records")
+        update_import_step(job_id, "import", "running", "Running Tidepool SQLite import")
+        result = run_script(["scripts/import_tidepool.py", str(destination), "--append"])
+    finally:
+        IMPORT_RUN_LOCK.release()
     if result.returncode:
         fail_import_job(job_id, "import", result)
         return
@@ -134,9 +162,10 @@ def run_import_job(job_id: str, destination: Path) -> None:
     update_import_step(job_id, "reload", "running", "Computing dashboard data from SQLite")
     try:
         payload = load_dashboard_payload()
-    except Exception as exc:  # noqa: BLE001 - capture job failure for display.
-        update_import_step(job_id, "reload", "failed", str(exc))
-        update_import_job(job_id, status="failed", message="Dashboard refresh failed", stderr=str(exc))
+    except Exception:  # noqa: BLE001 - capture job failure for display.
+        logger.exception("Dashboard refresh failed for import job %s", job_id)
+        update_import_step(job_id, "reload", "failed", "Dashboard refresh failed")
+        update_import_job(job_id, status="failed", message="Dashboard refresh failed", stderr="Dashboard refresh failed. Check server logs for details.")
         return
 
     update_import_step(job_id, "reload", "completed", "Dashboard payload ready")
@@ -144,8 +173,8 @@ def run_import_job(job_id: str, destination: Path) -> None:
         job_id,
         status="completed",
         message="Import completed",
-        stdout=result.stdout[-8000:],
-        stderr=result.stderr[-8000:],
+        stdout="",
+        stderr="",
         summary={
             "days": len(payload["tidepool"]["daily_ranges"]),
             "readings": payload["tidepool"]["totals"]["readings"],
@@ -162,9 +191,16 @@ def parse_json_stdout(result: subprocess.CompletedProcess[str]) -> dict[str, Any
 
 
 def run_cronometer_import_job(job_id: str, destination: Path) -> None:
-    update_import_job(job_id, status="running", message="Importing Cronometer nutrition")
-    update_import_step(job_id, "import", "running", "Checking duplicates and storing nutrition rows")
-    import_result = run_script(["scripts/import_cronometer.py", str(destination)])
+    if not IMPORT_RUN_LOCK.acquire(blocking=False):
+        update_import_step(job_id, "import", "failed", "Another import is already running")
+        update_import_job(job_id, status="failed", message="Import failed during import", stderr="Another import is already running.")
+        return
+    try:
+        update_import_job(job_id, status="running", message="Importing Cronometer nutrition")
+        update_import_step(job_id, "import", "running", "Checking duplicates and storing nutrition rows")
+        import_result = run_script(["scripts/import_cronometer.py", str(destination)])
+    finally:
+        IMPORT_RUN_LOCK.release()
     if import_result.returncode:
         fail_import_job(job_id, "import", import_result)
         return
@@ -180,9 +216,10 @@ def run_cronometer_import_job(job_id: str, destination: Path) -> None:
     update_import_step(job_id, "reload", "running", "Computing dashboard data from SQLite")
     try:
         payload = load_dashboard_payload()
-    except Exception as exc:  # noqa: BLE001 - capture job failure for display.
-        update_import_step(job_id, "reload", "failed", str(exc))
-        update_import_job(job_id, status="failed", message="Dashboard refresh failed", stderr=str(exc))
+    except Exception:  # noqa: BLE001 - capture job failure for display.
+        logger.exception("Dashboard refresh failed for import job %s", job_id)
+        update_import_step(job_id, "reload", "failed", "Dashboard refresh failed")
+        update_import_job(job_id, status="failed", message="Dashboard refresh failed", stderr="Dashboard refresh failed. Check server logs for details.")
         return
 
     cronometer = payload.get("cronometer", {}).get("totals", {})
@@ -191,8 +228,8 @@ def run_cronometer_import_job(job_id: str, destination: Path) -> None:
         job_id,
         status="completed",
         message="Cronometer import completed",
-        stdout=import_result.stdout[-8000:],
-        stderr=import_result.stderr[-8000:],
+        stdout="",
+        stderr="",
         summary={
             "days": cronometer.get("days", import_summary.get("days", 0)),
             "readings": cronometer.get("rows", import_summary.get("total_rows", 0)),
@@ -202,6 +239,18 @@ def run_cronometer_import_job(job_id: str, destination: Path) -> None:
             "total_rows": import_summary.get("total_rows", cronometer.get("rows", 0)),
         },
     )
+
+
+def save_upload(file: UploadFile, destination: Path) -> None:
+    bytes_written = 0
+    with destination.open("wb") as out:
+        while chunk := file.file.read(1024 * 1024):
+            bytes_written += len(chunk)
+            if bytes_written > MAX_UPLOAD_BYTES:
+                out.close()
+                destination.unlink(missing_ok=True)
+                raise HTTPException(status_code=413, detail="Upload is too large")
+            out.write(chunk)
 
 
 @app.get("/api/health")
@@ -221,8 +270,7 @@ async def import_tidepool(background_tasks: BackgroundTasks, file: UploadFile = 
 
     IMPORT_DIR.mkdir(parents=True, exist_ok=True)
     destination = IMPORT_DIR / Path(file.filename).name
-    with destination.open("wb") as out:
-        shutil.copyfileobj(file.file, out)
+    save_upload(file, destination)
 
     job = create_import_job(destination.name, "tidepool")
     background_tasks.add_task(run_import_job, job["id"], destination)
@@ -236,8 +284,7 @@ async def import_cronometer(background_tasks: BackgroundTasks, file: UploadFile 
 
     IMPORT_DIR.mkdir(parents=True, exist_ok=True)
     destination = IMPORT_DIR / Path(file.filename).name
-    with destination.open("wb") as out:
-        shutil.copyfileobj(file.file, out)
+    save_upload(file, destination)
 
     job = create_import_job(destination.name, "cronometer")
     background_tasks.add_task(run_cronometer_import_job, job["id"], destination)

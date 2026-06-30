@@ -485,6 +485,8 @@ def main() -> None:
     conn = sqlite3.connect(args.db)
     conn.row_factory = sqlite3.Row
     try:
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA busy_timeout = 5000")
         create_schema(conn, reset=not args.append)
         counts, skipped = insert_events(conn, records)
         conn.executemany(

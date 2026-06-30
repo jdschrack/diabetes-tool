@@ -37,6 +37,16 @@ def table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     )
 
 
+def relation_exists(conn: sqlite3.Connection, relation_name: str) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
+            (relation_name,),
+        ).fetchone()
+        is not None
+    )
+
+
 def macro_calories(row: dict[str, Any]) -> dict[str, Any]:
     carb_calories = (row.get("carbs_g") or 0) * 4.0
     fat_calories = (row.get("fat_g") or 0) * 9.0
@@ -365,7 +375,7 @@ def build_period_summaries(tidepool: dict[str, Any], log_data: dict[str, Any]) -
         period_days = [day for day in days if start <= day <= days[-1]]
         reading_count = sum((daily_ranges.get(day) or {}).get("readings", 0) for day in period_days)
         glucose_sum = sum(
-            (daily_ranges.get(day) or {}).get("avg_glucose", 0) * (daily_ranges.get(day) or {}).get("readings", 0)
+            ((daily_ranges.get(day) or {}).get("avg_glucose") or 0) * (daily_ranges.get(day) or {}).get("readings", 0)
             for day in period_days
         )
         in_range_count = sum((daily_ranges.get(day) or {}).get("in_range_count", 0) for day in period_days)
@@ -435,6 +445,79 @@ def stddev(values: list[float | None]) -> float | None:
         return None
     avg = sum(filtered) / len(filtered)
     return (sum((value - avg) ** 2 for value in filtered) / len(filtered)) ** 0.5
+
+
+def glucose_summary(values: list[float]) -> dict[str, Any]:
+    if not values:
+        return {
+            "avg_glucose": None,
+            "min_glucose": None,
+            "max_glucose": None,
+            "stddev_glucose": None,
+            "cv_pct": None,
+        }
+    avg_value = sum(values) / len(values)
+    sd_value = stddev(values) or 0.0
+    return {
+        "avg_glucose": round(avg_value, 1),
+        "min_glucose": round(min(values), 1),
+        "max_glucose": round(max(values), 1),
+        "stddev_glucose": round(sd_value, 1),
+        "cv_pct": round(100.0 * sd_value / avg_value, 1) if avg_value else None,
+    }
+
+
+def range_counts(values: list[float]) -> dict[str, Any]:
+    counts = {
+        "very_low_count": sum(1 for value in values if value < 54),
+        "low_count": sum(1 for value in values if 54 <= value < 70),
+        "in_range_count": sum(1 for value in values if 70 <= value <= 180),
+        "high_count": sum(1 for value in values if 180 < value <= 250),
+        "very_high_count": sum(1 for value in values if value > 250),
+    }
+    total = len(values)
+    pcts = {
+        key.replace("_count", "_pct"): round(100.0 * count / total, 1) if total else None
+        for key, count in counts.items()
+    }
+    return {**counts, **pcts}
+
+
+def build_glucose_ranges(glucose_rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    by_day: dict[str, dict[str, list[float]]] = defaultdict(lambda: {"cbg": [], "smbg": []})
+    for row in glucose_rows:
+        value = row.get("value")
+        row_type = row.get("type")
+        if row_type not in ("cbg", "smbg") or value is None:
+            continue
+        by_day[row["day"]][row_type].append(float(value))
+
+    daily_ranges: list[dict[str, Any]] = []
+    all_cbg: list[float] = []
+    all_smbg = 0
+    for day, grouped in sorted(by_day.items()):
+        cbg_values = grouped["cbg"]
+        smbg_values = grouped["smbg"]
+        all_cbg.extend(cbg_values)
+        all_smbg += len(smbg_values)
+        daily_ranges.append(
+            {
+                "day": day,
+                "readings": len(cbg_values),
+                "cgm_readings": len(cbg_values),
+                "smbg_readings": len(smbg_values),
+                **glucose_summary(cbg_values),
+                **range_counts(cbg_values),
+            }
+        )
+
+    totals = {
+        "readings": len(all_cbg),
+        "cgm_readings": len(all_cbg),
+        "smbg_readings": all_smbg,
+        **glucose_summary(all_cbg),
+    }
+    return daily_ranges, totals
 
 
 def round_or_none(value: float | None, digits: int = 1) -> float | None:
@@ -578,6 +661,9 @@ def observed_sensitivity(glucose_rows: list[dict[str, Any]], extra_basal: float)
 
 
 def build_meal_analysis(conn: sqlite3.Connection, tidepool: dict[str, Any], periods: list[dict[str, Any]]) -> dict[str, Any]:
+    if not all(relation_exists(conn, name) for name in ("food", "events")):
+        return {"all": [], "periods": {period["label"]: [] for period in periods}, "events": []}
+
     foods = query_all(
         conn,
         """
@@ -611,12 +697,13 @@ def build_meal_analysis(conn: sqlite3.Connection, tidepool: dict[str, Any], peri
     clusters: list[dict[str, Any]] = []
     for food in foods:
         food_time = parse_dt(food["local_time"])
+        carbs = float(food["carbs"] or 0.0)
         if (
             clusters
             and (food_time - parse_dt(clusters[-1]["last"])).total_seconds() / 60.0 <= 75
             and meal_name(food_time) == clusters[-1]["meal"]
         ):
-            clusters[-1]["carbs"] += food["carbs"]
+            clusters[-1]["carbs"] += carbs
             clusters[-1]["last"] = food["local_time"]
         else:
             clusters.append(
@@ -624,7 +711,7 @@ def build_meal_analysis(conn: sqlite3.Connection, tidepool: dict[str, Any], peri
                     "start": food["local_time"],
                     "last": food["local_time"],
                     "meal": meal_name(food_time),
-                    "carbs": food["carbs"],
+                    "carbs": carbs,
                 }
             )
 
@@ -766,54 +853,37 @@ def build_daily_events(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 
 
 def build_tidepool_data(conn: sqlite3.Connection) -> dict[str, Any]:
-    range_selects = ",\n".join(
-        f"SUM(CASE WHEN {condition} THEN 1 ELSE 0 END) AS {key}_count"
-        for key, _label, _bounds, condition in RANGES
-    )
-    range_pct_selects = ",\n".join(
-        f"ROUND(100.0 * SUM(CASE WHEN {condition} THEN 1 ELSE 0 END) / COUNT(*), 1) AS {key}_pct"
-        for key, _label, _bounds, condition in RANGES
-    )
-    daily_ranges = query_all(
-        conn,
-        f"""
-        SELECT
-            substr(local_time, 1, 10) AS day,
-            COUNT(*) AS readings,
-            SUM(CASE WHEN type = 'cbg' THEN 1 ELSE 0 END) AS cgm_readings,
-            SUM(CASE WHEN type = 'smbg' THEN 1 ELSE 0 END) AS smbg_readings,
-            ROUND(AVG(value), 1) AS avg_glucose,
-            ROUND(MIN(value), 1) AS min_glucose,
-            ROUND(MAX(value), 1) AS max_glucose,
-            ROUND(
-                SQRT(AVG(value * value) - AVG(value) * AVG(value)),
-                1
-            ) AS stddev_glucose,
-            ROUND(
-                100.0 * SQRT(AVG(value * value) - AVG(value) * AVG(value)) / AVG(value),
-                1
-            ) AS cv_pct,
-            {range_selects},
-            {range_pct_selects}
-        FROM events
-        WHERE type IN ('cbg', 'smbg') AND value IS NOT NULL
-        GROUP BY day
-        ORDER BY day
-        """,
-    )
-
-    daily_insulin = query_all(conn, "SELECT * FROM daily_insulin")
-    food = query_all(
+    glucose_rows = query_all(
         conn,
         """
         SELECT
             substr(local_time, 1, 10) AS day,
-            COUNT(*) AS meals,
-            ROUND(SUM(carbs), 1) AS carbs
-        FROM food
-        GROUP BY day
-        ORDER BY day
+            type,
+            value
+        FROM events
+        WHERE type IN ('cbg', 'smbg') AND value IS NOT NULL
+          AND local_time IS NOT NULL
+        ORDER BY local_time
         """,
+    )
+    daily_ranges, totals = build_glucose_ranges(glucose_rows)
+
+    daily_insulin = query_all(conn, "SELECT * FROM daily_insulin") if relation_exists(conn, "daily_insulin") else []
+    food = (
+        query_all(
+            conn,
+            """
+            SELECT
+                substr(local_time, 1, 10) AS day,
+                COUNT(*) AS meals,
+                ROUND(SUM(carbs), 1) AS carbs
+            FROM food
+            GROUP BY day
+            ORDER BY day
+            """,
+        )
+        if relation_exists(conn, "food")
+        else []
     )
     glucose_points = query_all(
         conn,
@@ -839,23 +909,6 @@ def build_tidepool_data(conn: sqlite3.Connection) -> dict[str, Any]:
         ORDER BY local_time
         """,
     )
-    totals = query_all(
-        conn,
-        """
-        SELECT
-            COUNT(*) AS readings,
-            SUM(CASE WHEN type = 'cbg' THEN 1 ELSE 0 END) AS cgm_readings,
-            SUM(CASE WHEN type = 'smbg' THEN 1 ELSE 0 END) AS smbg_readings,
-            ROUND(AVG(value), 1) AS avg_glucose,
-            ROUND(MIN(value), 1) AS min_glucose,
-            ROUND(MAX(value), 1) AS max_glucose,
-            ROUND(SQRT(AVG(value * value) - AVG(value) * AVG(value)), 1) AS stddev_glucose,
-            ROUND(100.0 * SQRT(AVG(value * value) - AVG(value) * AVG(value)) / AVG(value), 1) AS cv_pct
-        FROM events
-        WHERE type IN ('cbg', 'smbg') AND value IS NOT NULL
-        """,
-    )[0]
-
     basal_deviation = build_basal_deviation(conn)
     return {
         "ranges": [
