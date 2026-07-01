@@ -17,6 +17,9 @@ type JournalStats = {
   gmi: number | null;
 };
 
+type JournalRow = DashboardData["log"]["daily"][number];
+type FoodLogRow = DashboardData["cronometer"]["groups"][number];
+
 export type PdfReportPayload = {
   tab: ActiveReportTab;
   title: string;
@@ -46,6 +49,7 @@ export type PdfReportPayload = {
   };
   journal?: {
     rows: DashboardData["log"]["daily"];
+    foodLogRows: DashboardData["cronometer"]["groups"];
     stats: JournalStats;
     previousStats: JournalStats;
   };
@@ -94,6 +98,18 @@ function minutes(value: number | null | undefined) {
 
 function moneySafe(text: string) {
   return text.replace(/\u00b7/g, "-");
+}
+
+function foodGroupLabel(group: string) {
+  return group.toLowerCase() === "uncategorized" ? "Snacks" : group;
+}
+
+function foodSlot(group: string) {
+  const label = foodGroupLabel(group).toLowerCase();
+  if (label.includes("breakfast")) return "Breakfast";
+  if (label.includes("lunch")) return "Lunch";
+  if (label.includes("dinner")) return "Dinner";
+  return "Snacks/Other";
 }
 
 function addFooter(doc: jsPDF, pageNumber: number) {
@@ -409,6 +425,265 @@ function drawTable(doc: jsPDF, y: number, headers: string[], rows: string[][], w
   return y + rowH * (tableRows.length + 1) + 24;
 }
 
+function drawTableHeader(doc: jsPDF, y: number, headers: string[], widths: number[]) {
+  const x = page.margin;
+  const usable = page.width - page.margin * 2;
+  const rowH = 18;
+  doc.setFillColor(colors.soft);
+  doc.setDrawColor(colors.line);
+  doc.roundedRect(x, y, usable, rowH, 4, 4, "FD");
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(7.2);
+  doc.setTextColor(colors.ink);
+  let cursor = x + 8;
+  headers.forEach((header, index) => {
+    doc.text(header, cursor, y + 12, { maxWidth: widths[index] - 6 });
+    cursor += widths[index];
+  });
+}
+
+function drawJournalRowsTable(
+  doc: jsPDF,
+  payload: PdfReportPayload,
+  y: number,
+  rows: JournalRow[],
+  pageNumber: number
+) {
+  const headers = ["Date", "Carbs", "Total U", "Basal U", "Bolus U", "Avg BG", "Basal %", "Bolus %", "Bolus/g", "Carbs/U"];
+  const widths = [60, 45, 48, 48, 48, 50, 50, 50, 52, 54];
+  const rowH = 18;
+  const bottomLimit = page.height - 48;
+  const usable = page.width - page.margin * 2;
+  const x = page.margin;
+  let currentPage = pageNumber;
+  let cursorY = y;
+
+  if (!rows.length) {
+    doc.setTextColor(colors.muted);
+    doc.setFontSize(9);
+    doc.text("No journal rows in the selected range.", x, cursorY + 14);
+    return { y: cursorY + 32, pageNumber: currentPage };
+  }
+
+  drawTableHeader(doc, cursorY, headers, widths);
+  cursorY += rowH;
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(7.1);
+
+  rows.forEach((row) => {
+    if (cursorY + rowH > bottomLimit) {
+      currentPage += 1;
+      cursorY = addPage(doc, currentPage);
+      cursorY = drawHeader(doc, payload, cursorY);
+      cursorY = drawSectionTitle(doc, cursorY, "Journal Rows", "Continued selected-range daily journal data.");
+      drawTableHeader(doc, cursorY, headers, widths);
+      cursorY += rowH;
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(7.1);
+    }
+
+    doc.setDrawColor(colors.line);
+    doc.line(x, cursorY, x + usable, cursorY);
+    let cursorX = x + 8;
+    const cells = [
+      row.date,
+      `${fmt(row.carbs, 0)}g`,
+      `${fmt(row.total, 1)}U`,
+      `${fmt(row.basal, 1)}U`,
+      `${fmt(row.bolus, 1)}U`,
+      fmt(row.avg_bg, 0),
+      `${fmt(row.basal_pct, 0)}%`,
+      `${fmt(row.bolus_pct, 0)}%`,
+      fmt(row.bolus_per_carb, 3),
+      fmt(row.carbs_per_bolus, 1)
+    ];
+    cells.forEach((cell, index) => {
+      doc.setTextColor(index === 0 ? colors.ink : colors.muted);
+      if (index === 0) doc.setFont("helvetica", "bold");
+      doc.text(cell, cursorX, cursorY + 12, { maxWidth: widths[index] - 6 });
+      if (index === 0) doc.setFont("helvetica", "normal");
+      cursorX += widths[index];
+    });
+    cursorY += rowH;
+  });
+
+  return { y: cursorY + 20, pageNumber: currentPage };
+}
+
+function drawFoodLogRowsTable(
+  doc: jsPDF,
+  payload: PdfReportPayload,
+  y: number,
+  rows: FoodLogRow[],
+  pageNumber: number
+) {
+  const slots = ["Breakfast", "Lunch", "Dinner", "Snacks/Other"] as const;
+  const headers = ["Date", ...slots];
+  const widths = [58, 121, 121, 121, 123];
+  const headerH = 20;
+  const rowH = 66;
+  const bottomLimit = page.height - 48;
+  const usable = page.width - page.margin * 2;
+  const x = page.margin;
+  let currentPage = pageNumber;
+  let cursorY = y;
+
+  if (!rows.length) {
+    doc.setTextColor(colors.muted);
+    doc.setFontSize(9);
+    doc.text("No Cronometer food log rows in the selected range.", x, cursorY + 14);
+    return { y: cursorY + 32, pageNumber: currentPage };
+  }
+
+  const byDay = new Map<string, Record<(typeof slots)[number], FoodLogRow[]>>();
+  rows.forEach((row) => {
+    if (!byDay.has(row.date)) {
+      byDay.set(row.date, { Breakfast: [], Lunch: [], Dinner: [], "Snacks/Other": [] });
+    }
+    byDay.get(row.date)?.[foodSlot(row.group)].push(row);
+  });
+  const dayRows = Array.from(byDay.entries()).sort(([a], [b]) => b.localeCompare(a));
+  const mealTotals = (mealRows: FoodLogRow[]) => ({
+    calories: mealRows.reduce((sum, row) => sum + (row.energy_kcal || 0), 0),
+    carbs: mealRows.reduce((sum, row) => sum + (row.carbs_g || 0), 0),
+    netCarbs: mealRows.reduce((sum, row) => sum + (row.net_carbs_g || 0), 0),
+    fiber: mealRows.reduce((sum, row) => sum + (row.fiber_g || 0), 0),
+    protein: mealRows.reduce((sum, row) => sum + (row.protein_g || 0), 0),
+    fat: mealRows.reduce((sum, row) => sum + (row.fat_g || 0), 0)
+  });
+  const mealLines = (mealRows: FoodLogRow[]) => {
+    if (!mealRows.length) return ["--"];
+    const totals = mealTotals(mealRows);
+    return [
+      `${fmt(totals.calories, 0)} kcal`,
+      `Carbs ${fmt(totals.carbs, 1)}g / Net ${fmt(totals.netCarbs, 1)}g`,
+      `Protein ${fmt(totals.protein, 1)}g / Fat ${fmt(totals.fat, 1)}g`,
+      `Fiber ${fmt(totals.fiber, 1)}g`
+    ];
+  };
+
+  drawTableHeader(doc, cursorY, headers, widths);
+  cursorY += headerH;
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(6.8);
+
+  dayRows.forEach(([date, meals]) => {
+    if (cursorY + rowH > bottomLimit) {
+      currentPage += 1;
+      cursorY = addPage(doc, currentPage);
+      cursorY = drawHeader(doc, payload, cursorY);
+      cursorY = drawSectionTitle(doc, cursorY, "Food Log", "Continued daily meal macro matrix.");
+      drawTableHeader(doc, cursorY, headers, widths);
+      cursorY += headerH;
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(6.8);
+    }
+
+    doc.setDrawColor(colors.line);
+    doc.line(x, cursorY, x + usable, cursorY);
+
+    doc.setTextColor(colors.ink);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(7.3);
+    doc.text(date, x + 8, cursorY + 14, { maxWidth: widths[0] - 10 });
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(6.8);
+
+    let cursorX = x + widths[0] + 8;
+    slots.forEach((slot, index) => {
+      const lines = mealLines(meals[slot]);
+      doc.setTextColor(lines[0] === "--" ? colors.muted : colors.ink);
+      if (lines[0] !== "--") {
+        doc.setFont("helvetica", "bold");
+        doc.text(lines[0], cursorX, cursorY + 12, { maxWidth: widths[index + 1] - 12 });
+        doc.setFont("helvetica", "normal");
+      } else {
+        doc.text("--", cursorX, cursorY + 28, { maxWidth: widths[index + 1] - 12 });
+      }
+      lines.slice(1).forEach((line, lineIndex) => {
+        doc.setTextColor(colors.muted);
+        doc.text(line, cursorX, cursorY + 23 + lineIndex * 10, { maxWidth: widths[index + 1] - 12 });
+      });
+      cursorX += widths[index + 1];
+    });
+    cursorY += rowH;
+  });
+
+  return { y: cursorY + 20, pageNumber: currentPage };
+}
+
+function drawFoodLogSummary(doc: jsPDF, y: number, rows: FoodLogRow[]) {
+  const total = (getter: (row: FoodLogRow) => number | null | undefined) =>
+    rows.reduce((sum, row) => sum + (getter(row) || 0), 0);
+  const days = new Set(rows.map((row) => row.date)).size;
+  const dailyAverage = (getter: (row: FoodLogRow) => number | null | undefined) => (days ? total(getter) / days : null);
+  return drawCards(doc, y, [
+    ["Food Days", `${days}`, `${rows.length} meal-group rows`, colors.deepBlue],
+    ["Avg Calories", `${fmt(dailyAverage((row) => row.energy_kcal), 0)}`, "Daily kcal average", colors.amber],
+    [
+      "Avg Carbs",
+      `${fmt(dailyAverage((row) => row.carbs_g), 1)}g`,
+      `${fmt(dailyAverage((row) => row.net_carbs_g), 1)}g net / day`,
+      colors.green
+    ],
+    [
+      "Avg Protein",
+      `${fmt(dailyAverage((row) => row.protein_g), 1)}g`,
+      `${fmt(dailyAverage((row) => row.fat_g), 1)}g fat / day`,
+      colors.violet
+    ]
+  ]);
+}
+
+function drawSmallChartTitle(doc: jsPDF, x: number, y: number, title: string, detail: string, color: string) {
+  doc.setTextColor(colors.ink);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(9);
+  doc.text(title, x, y);
+  doc.setTextColor(color);
+  doc.setFontSize(8);
+  doc.text(detail, x + 86, y);
+}
+
+function drawJournalTrendBoard(doc: jsPDF, y: number, rows: JournalRow[]) {
+  const chronological = rows.slice().sort((a, b) => a.date.localeCompare(b.date));
+  const usable = page.width - page.margin * 2;
+  const gap = 12;
+  const half = (usable - gap) / 2;
+  const points = chronological.map((row) => ({ label: row.date.slice(5), value: row.avg_bg }));
+  drawSmallChartTitle(doc, page.margin, y, "Average BG", "40-400 mg/dL", colors.green);
+  drawLineChart(doc, page.margin, y + 8, usable, 120, points, {
+    min: 40,
+    max: 400,
+    thresholdLow: 70,
+    thresholdHigh: 180,
+    color: colors.green
+  });
+
+  const lowerY = y + 146;
+  drawSmallChartTitle(doc, page.margin, lowerY, "Daily insulin", "total units", colors.deepBlue);
+  drawLineChart(
+    doc,
+    page.margin,
+    lowerY + 8,
+    half,
+    106,
+    chronological.map((row) => ({ label: row.date.slice(5), value: row.total })),
+    { min: 0, color: colors.deepBlue }
+  );
+  drawSmallChartTitle(doc, page.margin + half + gap, lowerY, "Daily carbs", "grams", colors.amber);
+  drawBars(
+    doc,
+    page.margin + half + gap,
+    lowerY + 8,
+    half,
+    106,
+    chronological.map((row) => ({ label: row.date.slice(5), value: row.carbs })),
+    { min: 0, color: colors.amber, suffix: "g" }
+  );
+  return lowerY + 132;
+}
+
 function average(values: Array<number | null | undefined>) {
   const numeric = values.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
   return numeric.length ? numeric.reduce((total, value) => total + value, 0) / numeric.length : null;
@@ -448,8 +723,6 @@ function todayReport(doc: jsPDF, payload: PdfReportPayload) {
   ]);
   y += 4;
   y = drawSectionTitle(doc, y, "Glucose Trend", "Selected-day CGM with fingerstick markers overlaid.");
-  const smbgValues = today.smbg.map((row) => row.value);
-  const glucoseMax = Math.max(260, ...today.glucose.map((row) => row.value), ...smbgValues);
   drawLineChart(
     doc,
     page.margin,
@@ -463,7 +736,7 @@ function todayReport(doc: jsPDF, payload: PdfReportPayload) {
     })),
     {
       min: 40,
-      max: glucoseMax,
+      max: 400,
       thresholdLow: 70,
       thresholdHigh: 180,
       color: colors.green,
@@ -500,9 +773,6 @@ function summaryReport(doc: jsPDF, payload: PdfReportPayload) {
   y = drawHeader(doc, payload, y);
   y = drawCards(doc, y, summary.metrics);
   y = drawSectionTitle(doc, y + 4, "Daily CGM Trend", "Average glucose by day in the selected range.");
-  const summaryAverageValues = summary.ranges
-    .map((row) => row.avg_glucose)
-    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
   drawLineChart(
     doc,
     page.margin,
@@ -510,7 +780,7 @@ function summaryReport(doc: jsPDF, payload: PdfReportPayload) {
     page.width - page.margin * 2,
     145,
     summary.ranges.map((row) => ({ label: row.day.slice(5), value: row.avg_glucose })),
-    { min: 60, max: Math.max(260, ...summaryAverageValues), thresholdLow: 70, thresholdHigh: 180, color: colors.blue }
+    { min: 40, max: 400, thresholdLow: 70, thresholdHigh: 180, color: colors.blue }
   );
   y += 164;
 
@@ -662,39 +932,38 @@ function journalReport(doc: jsPDF, payload: PdfReportPayload) {
     ["Carbs/U", fmt(journal.stats.carbsPerBolus, 1), "Carbs per bolus unit", colors.amber],
     ["GMI", `${fmt(journal.stats.gmi, 2)}%`, "From avg glucose", colors.red]
   ]);
-  y = drawSectionTitle(doc, y + 4, "Journal Trend", "Daily insulin and carbohydrate log values.");
-  drawLineChart(
+  y = drawSectionTitle(
     doc,
-    page.margin,
-    y,
-    page.width - page.margin * 2,
-    130,
-    journal.rows.slice().reverse().map((row) => ({ label: row.date.slice(5), value: row.total })),
-    { min: 0, color: colors.deepBlue }
+    y + 4,
+    "Journal Trend",
+    "Average glucose, total insulin, and carbohydrate context across the selected range."
   );
-  y += 152;
-  if (y > 610) {
-    y = addPage(doc, 2);
+  y = drawJournalTrendBoard(doc, y, journal.rows);
+  let pageNumber = 1;
+  if (y > 600) {
+    pageNumber += 1;
+    y = addPage(doc, pageNumber);
     y = drawHeader(doc, payload, y);
   }
-  y = drawSectionTitle(doc, y, "Journal Rows", "Most recent rows in the selected range.");
-  drawTable(
-    doc,
-    y,
-    ["Date", "Carbs", "Total", "Basal", "Bolus", "Avg BG", "Bolus/g", "Carbs/U"],
-    journal.rows.map((row) => [
-      row.date,
-      `${fmt(row.carbs, 0)}g`,
-      `${fmt(row.total, 1)}U`,
-      `${fmt(row.basal, 1)}U`,
-      `${fmt(row.bolus, 1)}U`,
-      fmt(row.avg_bg, 0),
-      fmt(row.bolus_per_carb, 3),
-      fmt(row.carbs_per_bolus, 1)
-    ]),
-    [70, 52, 54, 54, 54, 58, 68, 68],
-    18
-  );
+  y = drawSectionTitle(doc, y, "Journal Rows", "All daily journal rows in the selected range.");
+  const journalTable = drawJournalRowsTable(doc, payload, y, journal.rows, pageNumber);
+  y = journalTable.y;
+  pageNumber = journalTable.pageNumber;
+
+  if (y > 600) {
+    pageNumber += 1;
+    y = addPage(doc, pageNumber);
+    y = drawHeader(doc, payload, y);
+  }
+  y = drawSectionTitle(doc, y, "Food Log", "Cronometer meal-group rows in the selected Journal range.");
+  y = drawFoodLogSummary(doc, y, journal.foodLogRows);
+  if (y > 610) {
+    pageNumber += 1;
+    y = addPage(doc, pageNumber);
+    y = drawHeader(doc, payload, y);
+    y = drawSectionTitle(doc, y, "Food Log", "Cronometer meal-group rows in the selected Journal range.");
+  }
+  drawFoodLogRowsTable(doc, payload, y, journal.foodLogRows, pageNumber);
 }
 
 export function generateReportPdf(payload: PdfReportPayload) {
