@@ -26,6 +26,7 @@ TYPE_VIEWS = {
         SELECT id, time, local_time, device_id, value, units, upload_id
         FROM events
         WHERE type = 'smbg'
+          AND raw_json NOT LIKE '%GlucoseIsDisplayOnly%'
         ORDER BY time
     """,
     "basal": """
@@ -95,6 +96,7 @@ TYPE_VIEWS = {
             ROUND(100.0 * SUM(CASE WHEN value > 180 THEN 1 ELSE 0 END) / COUNT(*), 1) AS pct_high
         FROM events
         WHERE type IN ('cbg', 'smbg') AND value IS NOT NULL
+          AND NOT (type = 'smbg' AND raw_json LIKE '%GlucoseIsDisplayOnly%')
         GROUP BY day, type
         ORDER BY day, type
     """,
@@ -186,6 +188,15 @@ def maybe_decode_json(value: Any) -> Any | None:
         return json.loads(stripped)
     except json.JSONDecodeError:
         return None
+
+
+def is_display_only_smbg(record: dict[str, Any]) -> bool:
+    if record.get("type") != "smbg":
+        return False
+    payload = maybe_decode_json(record.get("payload"))
+    if not isinstance(payload, dict):
+        return False
+    return payload.get("com.loopkit.GlucoseKit.HKMetadataKey.GlucoseIsDisplayOnly") in {1, True, "1", "true"}
 
 
 def create_schema(conn: sqlite3.Connection, reset: bool) -> None:
@@ -297,6 +308,9 @@ def insert_events(conn: sqlite3.Connection, records: list[dict[str, Any]]) -> tu
     for record in records:
         event_id = text_value(record.get("id"))
         event_type = text_value(record.get("type")) or "unknown"
+        if is_display_only_smbg(record):
+            skipped += 1
+            continue
         raw_json = canonical_record(record)
         record_hash = hashlib.sha256(raw_json.encode("utf-8")).hexdigest()
         if conn.execute("SELECT 1 FROM events WHERE record_hash = ?", (record_hash,)).fetchone():
