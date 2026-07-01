@@ -26,7 +26,10 @@ TYPE_VIEWS = {
         SELECT id, time, local_time, device_id, value, units, upload_id
         FROM events
         WHERE type = 'smbg'
-          AND raw_json NOT LIKE '%GlucoseIsDisplayOnly%'
+          AND raw_json NOT LIKE '%HKMetadataKey%'
+          AND raw_json NOT LIKE '%HKDevice%'
+          AND raw_json NOT LIKE '%com.loopkit%'
+          AND raw_json NOT LIKE '%HasLoopKitOrigin%'
         ORDER BY time
     """,
     "basal": """
@@ -96,7 +99,10 @@ TYPE_VIEWS = {
             ROUND(100.0 * SUM(CASE WHEN value > 180 THEN 1 ELSE 0 END) / COUNT(*), 1) AS pct_high
         FROM events
         WHERE type IN ('cbg', 'smbg') AND value IS NOT NULL
-          AND NOT (type = 'smbg' AND raw_json LIKE '%GlucoseIsDisplayOnly%')
+          AND raw_json NOT LIKE '%HKMetadataKey%'
+          AND raw_json NOT LIKE '%HKDevice%'
+          AND raw_json NOT LIKE '%com.loopkit%'
+          AND raw_json NOT LIKE '%HasLoopKitOrigin%'
         GROUP BY day, type
         ORDER BY day, type
     """,
@@ -190,13 +196,14 @@ def maybe_decode_json(value: Any) -> Any | None:
         return None
 
 
-def is_display_only_smbg(record: dict[str, Any]) -> bool:
-    if record.get("type") != "smbg":
-        return False
+def is_apple_health_record(record: dict[str, Any]) -> bool:
     payload = maybe_decode_json(record.get("payload"))
     if not isinstance(payload, dict):
         return False
-    return payload.get("com.loopkit.GlucoseKit.HKMetadataKey.GlucoseIsDisplayOnly") in {1, True, "1", "true"}
+    return any(
+        key.startswith("HK") or key.startswith("com.loopkit.") or key == "HasLoopKitOrigin"
+        for key in payload
+    )
 
 
 def create_schema(conn: sqlite3.Connection, reset: bool) -> None:
@@ -308,7 +315,7 @@ def insert_events(conn: sqlite3.Connection, records: list[dict[str, Any]]) -> tu
     for record in records:
         event_id = text_value(record.get("id"))
         event_type = text_value(record.get("type")) or "unknown"
-        if is_display_only_smbg(record):
+        if is_apple_health_record(record):
             skipped += 1
             continue
         raw_json = canonical_record(record)
