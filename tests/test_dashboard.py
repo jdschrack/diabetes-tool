@@ -81,7 +81,7 @@ def test_smbg_only_day_is_present_without_cgm_metrics():
     assert day["in_range_pct"] is None
 
 
-def test_display_only_smbg_rows_are_not_counted_as_fingersticks():
+def test_apple_health_glucose_rows_are_not_counted():
     conn = make_conn()
     insert_event(conn, 1, "cbg", "2026-06-25T08:00:00", value=140)
     insert_event(
@@ -108,7 +108,7 @@ def test_display_only_smbg_rows_are_not_counted_as_fingersticks():
     assert payload["tidepool"]["smbg_points"] == []
 
 
-def test_import_skips_display_only_smbg_rows():
+def test_import_skips_apple_health_records():
     conn = make_conn()
     counts, skipped = insert_events(
         conn,
@@ -122,6 +122,21 @@ def test_import_skips_display_only_smbg_rows():
                 "payload": "{\"com.loopkit.GlucoseKit.HKMetadataKey.GlucoseIsDisplayOnly\":1}",
             },
             {
+                "id": "apple-basal",
+                "type": "basal",
+                "time": "2026-06-25T04:05:00Z",
+                "rate": 1.5,
+                "duration": 5,
+                "payload": "{\"HKInsulinDeliveryReason\":1,\"HasLoopKitOrigin\":1}",
+            },
+            {
+                "id": "apple-food",
+                "type": "food",
+                "time": "2026-06-25T04:10:00Z",
+                "nutrition": "{\"carbohydrate\":{\"net\":20,\"units\":\"grams\"}}",
+                "payload": "{\"HKFoodType\":\"\",\"com.loopkit.CarbKit.HKMetadataKey.AbsorptionTimeMinutes\":180}",
+            },
+            {
                 "id": "real-fingerstick",
                 "type": "smbg",
                 "time": "2026-06-25T12:00:00Z",
@@ -132,9 +147,9 @@ def test_import_skips_display_only_smbg_rows():
         ],
     )
 
-    assert skipped == 1
+    assert skipped == 3
     assert counts["smbg"] == 1
-    assert conn.execute("SELECT COUNT(*) FROM events WHERE type = 'smbg'").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
 
 
 def test_null_food_carbs_do_not_crash_meal_analysis():

@@ -863,7 +863,10 @@ def build_tidepool_data(conn: sqlite3.Connection) -> dict[str, Any]:
         FROM events
         WHERE type IN ('cbg', 'smbg') AND value IS NOT NULL
           AND local_time IS NOT NULL
-          AND NOT (type = 'smbg' AND raw_json LIKE '%GlucoseIsDisplayOnly%')
+          AND raw_json NOT LIKE '%HKMetadataKey%'
+          AND raw_json NOT LIKE '%HKDevice%'
+          AND raw_json NOT LIKE '%com.loopkit%'
+          AND raw_json NOT LIKE '%HasLoopKitOrigin%'
         ORDER BY local_time
         """,
     )
@@ -907,7 +910,10 @@ def build_tidepool_data(conn: sqlite3.Connection) -> dict[str, Any]:
             ROUND(value, 1) AS value
         FROM events
         WHERE type = 'smbg' AND value IS NOT NULL
-          AND raw_json NOT LIKE '%GlucoseIsDisplayOnly%'
+          AND raw_json NOT LIKE '%HKMetadataKey%'
+          AND raw_json NOT LIKE '%HKDevice%'
+          AND raw_json NOT LIKE '%com.loopkit%'
+          AND raw_json NOT LIKE '%HasLoopKitOrigin%'
         ORDER BY local_time
         """,
     )
