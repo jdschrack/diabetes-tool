@@ -319,7 +319,8 @@ function glucoseAverageOption(rows: DailyRange[]): EChartsOption {
     },
     yAxis: {
       type: "value",
-      min: 50,
+      min: 40,
+      max: 400,
       axisLabel: { color: "#657186" },
       splitLine: { lineStyle: { color: "#eef2f6" } }
     },
@@ -514,6 +515,7 @@ function dayGlucoseOption(
     yAxis: {
       type: "value",
       min: 40,
+      max: 400,
       axisLabel: { color: "#657186" },
       axisLine: { show: false },
       axisTick: { show: false },
@@ -2154,6 +2156,7 @@ export default function App() {
         filename: reportFilename(),
         journal: {
           rows: journalRows,
+          foodLogRows,
           stats: journalStats,
           previousStats: previousJournalStats
         }
