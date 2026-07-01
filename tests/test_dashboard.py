@@ -1,7 +1,7 @@
 import json
 import sqlite3
 
-from scripts.import_tidepool import create_schema
+from scripts.import_tidepool import create_schema, insert_events
 from server.dashboard import build_payload
 
 
@@ -79,6 +79,62 @@ def test_smbg_only_day_is_present_without_cgm_metrics():
     assert day["smbg_readings"] == 1
     assert day["avg_glucose"] is None
     assert day["in_range_pct"] is None
+
+
+def test_display_only_smbg_rows_are_not_counted_as_fingersticks():
+    conn = make_conn()
+    insert_event(conn, 1, "cbg", "2026-06-25T08:00:00", value=140)
+    insert_event(
+        conn,
+        2,
+        "smbg",
+        "2026-06-25T04:00:00",
+        value=140,
+        timezone_offset=None,
+        raw={
+            "payload": (
+                "{\"com.loopkit.GlucoseKit.HKMetadataKey.GlucoseIsDisplayOnly\":1,"
+                "\"HKMetadataKeySyncIdentifier\":\"152_1212443412_0_0\"}"
+            )
+        },
+    )
+    conn.commit()
+
+    payload = build_payload(conn)
+    day = payload["tidepool"]["daily_ranges"][0]
+
+    assert day["cgm_readings"] == 1
+    assert day["smbg_readings"] == 0
+    assert payload["tidepool"]["smbg_points"] == []
+
+
+def test_import_skips_display_only_smbg_rows():
+    conn = make_conn()
+    counts, skipped = insert_events(
+        conn,
+        [
+            {
+                "id": "display-only",
+                "type": "smbg",
+                "time": "2026-06-25T04:00:00Z",
+                "units": "mg/dL",
+                "value": 140,
+                "payload": "{\"com.loopkit.GlucoseKit.HKMetadataKey.GlucoseIsDisplayOnly\":1}",
+            },
+            {
+                "id": "real-fingerstick",
+                "type": "smbg",
+                "time": "2026-06-25T12:00:00Z",
+                "timezoneOffset": -240,
+                "units": "mg/dL",
+                "value": 120,
+            },
+        ],
+    )
+
+    assert skipped == 1
+    assert counts["smbg"] == 1
+    assert conn.execute("SELECT COUNT(*) FROM events WHERE type = 'smbg'").fetchone()[0] == 1
 
 
 def test_null_food_carbs_do_not_crash_meal_analysis():
